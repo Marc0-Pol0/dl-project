@@ -2,9 +2,22 @@
 import os
 import pandas as pd
 import datetime as dt
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+import torch
+from sentiment import get_finbert_probabilities
 
 pd.set_option('display.max_rows', None)
 pd.set_option('display.max_columns', None)
+
+# Device configuration
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+else:
+    device = torch.device("cpu")
+
+# Load the FinBERT model and tokenizer from ProsusAI
+tokenizer = AutoTokenizer.from_pretrained("ProsusAI/finbert")
+model = AutoModelForSequenceClassification.from_pretrained("ProsusAI/finbert").to(device)
 
 # Paths
 DATA_DIR = './data/raw'
@@ -13,11 +26,11 @@ OUTPUT_DIR = './data/processed/'
 # Variables
 start_date = dt.datetime(2024, 10, 1)
 end_date = dt.datetime(2025, 8, 1)
-FUND, STOCK, NEWS = False, False, False
+FUND, STOCK, NEWS, DATES = False, False, True, False
 SAVE = False
 
 # Load raw data
-obj = pd.read_pickle(DATA_DIR + '/DL_dataset.pkl')
+obj = pd.read_pickle(DATA_DIR + '/DL_dataset(1).pkl')
 
 # --- FUNDAMENTALS ---
 if FUND:
@@ -110,65 +123,94 @@ if STOCK:
 
 # --- NEWS ---
 news_dict = {}
-
+i = 0
 # Iterate over each company in the dataset
 if NEWS:
+    for id in obj.keys():
+        if i == 1: break
+        # Extract ticker (Same as before)
+        ticker = obj[id]['companyMapping']['Code'].item().replace('.US', '')
+
+        # Extract raw news
+        news_raw = obj[id]['news'].copy() # Use .copy() to avoid SettingWithCopyWarning
+
+        # 1. CLEANING AND BODY EXTRACTION (Same as before)
+        news_raw['event_time'] = pd.to_datetime(news_raw['event_time'], utc=True, errors='coerce')
+        news_raw = news_raw.dropna(subset=['event_time'])
+        
+        news_raw['date'] = news_raw['event_time'].dt.date
+        
+        # Extract the 'body' for FinBERT
+        news_raw['body'] = news_raw['event_data'].apply(
+            lambda x: x.get('body', '') if isinstance(x, dict) else ''
+        )
+        
+        # Drop news with an empty body
+        news_raw = news_raw[news_raw['body'] != ''].reset_index(drop=True)
+
+        # 2. CALCULATE SENTIMENT PER ARTICLE (CRUCIAL CHANGE)
+        
+        # Apply your function to each 'body' and expand the resulting dictionary 
+        # into new columns named 'positive', 'negative', 'neutral'
+        def sentiment_caller(text):
+        # This wrapper passes the globally loaded objects to your function
+            return get_finbert_probabilities(text, model, tokenizer, device)
+        
+        # The result_type='expand' parameter is critical here for efficiency.
+        sentiment_series = news_raw['body'].apply(sentiment_caller)
+
+        # 2. Convert the Series of Dictionaries to a DataFrame
+        sentiment_scores = sentiment_series.apply(pd.Series)
+        
+        # 3. COMBINE DATA AND CALCULATE DAILY MEAN
+        
+        # Concatenate the sentiment scores with the date
+        news_sentiment = pd.concat([news_raw[['date']], sentiment_scores], axis=1)
+
+        # Calculate the mean of the three probability columns for each day
+        daily_sentiment = news_sentiment.groupby('date')[
+            ['positive', 'negative', 'neutral']
+        ].mean().reset_index()
+
+        # 4. REINDEX TO INCLUDE ALL DAYS (Same as before)
+        all_days = pd.date_range(start=start_date, end=end_date, freq='D')
+        
+        daily_sentiment['date'] = pd.to_datetime(daily_sentiment['date'])
+
+        # Reindex and use FFILL/BFILL to handle days with NO news
+        daily_sentiment = daily_sentiment.set_index('date').reindex(all_days)
+        daily_sentiment = daily_sentiment.ffill().bfill() # Forward-fill then back-fill
+        daily_sentiment = daily_sentiment.reset_index().rename(columns={'index': 'date'})
+
+        # Save to dictionary
+        news_dict[ticker] = daily_sentiment
+        i += 1
+        print(news_dict[ticker].head())
+    # Save news dataset
+    if SAVE:
+        pd.to_pickle(news_dict, OUTPUT_DIR + 'news.pkl')
+
+
+# --- DATES ---
+if DATES:
+    dates_dict = {}
+
+    # Iterate over each company in the dataset
     for id in obj.keys():
 
         # Extract ticker
         ticker = obj[id]['companyMapping']['Code'].item()
         ticker = ticker.replace('.US', '')
 
-        # Extract raw news
-        news_raw = obj[id]['news']  
+        # Extract stock values
+        ea_date = obj[id]['earnings']['Earnings Date']
+        date_df = pd.DataFrame(ea_date)
 
-        # Convert event_time to datetime, letting pandas infer format
-        news_raw['event_time'] = pd.to_datetime(news_raw['event_time'], utc=True, errors='coerce')
+        # Reset index and rename
+        date_df = date_df.reset_index().rename(columns={'index': 'date'})
+    
+        dates_dict[ticker] = date_df
 
-        # Drop rows that couldn't be parsed
-        news_raw = news_raw.dropna(subset=['event_time'])
-
-        # Now you can safely extract the date
-        news_raw = news_raw.copy()
-        news_raw['date'] = news_raw['event_time'].dt.date
-
-        # Extract only the 'body' field from event_data
-        
-        news_raw['body'] = news_raw['event_data'].apply(lambda x: x.get('body', '') 
-                                                        if isinstance(x, dict) else '')
-
-        # Keep only needed columns
-        news_raw = news_raw[['event_time', 'body']]
-
-        # Create a daily date range
-        all_days = pd.date_range(start=start_date, end=end_date, freq='D')
-        news_df = pd.DataFrame(index=all_days)
-        news_df.index.name = 'date'
-
-        # Group news by date
-        news_raw['date'] = news_raw['event_time'].dt.date
-        news_grouped = news_raw.groupby('date')
-
-        # Count number of news per day
-        news_df['news_count'] = news_grouped.size().reindex(all_days.date, fill_value=0).values
-
-        # Concatenate bodies per day
-        news_df['body'] = news_grouped['body'] \
-            .apply(lambda texts: " ".join(texts)) \
-            .reindex(all_days.date, fill_value='') \
-            .values
-
-        # Reset index so 'date' is a column
-        news_df = news_df.reset_index()
-        
-        if ticker == 'AAPL':
-            print(news_df.head(20))
-
-        # Save to dictionary
-        news_dict[ticker] = news_df
-
-    # Save news dataset
+    # Save stock values dataset
     if SAVE:
-        pd.to_pickle(news_dict, OUTPUT_DIR + 'news.pkl')
-
-
+        pd.to_pickle(dates_dict, OUTPUT_DIR + 'earning_dates.pkl')

@@ -1,8 +1,12 @@
 import pandas as pd
 import pprint
+import os
 
 # Load pickle
-obj = pd.read_pickle('./data/raw/DL_dataset.pkl')
+# obj = pd.read_pickle('./data/raw/DL_dataset.pkl')
+obj_news = pd.read_pickle('./data/trainable/final_data.pkl')
+print(obj_news['AAPL'].head())
+print(obj_news['AAPL'].index.date())
 
 def get_dict_structure(data):
     """
@@ -46,7 +50,7 @@ def get_dict_structure(data):
 
 # print(get_dict_structure(obj['B19ST9-R']))
 
-print(obj['B19ST9-R']['news']['event_time'].head())
+# print(obj['B19ST9-R']['earnings']['Earnings Date'].head())
 
 # print(obj['B19ST9-R']['news']['event_type'])
 # print(obj['B19ST9-R']['news']['event_time'])
