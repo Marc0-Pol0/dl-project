@@ -6,7 +6,7 @@ import os
 # obj = pd.read_pickle('./data/raw/DL_dataset.pkl')
 obj_news = pd.read_pickle('./data/trainable/final_data.pkl')
 print(obj_news['AAPL'].head())
-print(obj_news['AAPL'].index.date())
+print(obj_news['AAPL'].index)
 
 def get_dict_structure(data):
     """
