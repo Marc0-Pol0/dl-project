@@ -9,10 +9,10 @@ from typing import Dict, List, Tuple
 
 # --- Configuration ---
 DATA_DIR = './data/trainable/' 
-EA_FILENAME = 'earning_dates.pkl'
-FEATURE_FILENAME = 'final_data.pkl'
+EA_FILENAME = 'earning_dates_500.pkl'
+FEATURE_FILENAME = 'final_data_500.pkl'
 SEQUENCE_LENGTH = 30  # Days preceding the EA
-PRICE_CHANGE_THRESHOLD = 0.03  # 5% threshold for UP/DOWN label
+PRICE_CHANGE_THRESHOLD = 0.03  # 3% threshold for UP/DOWN label
 
 # --- 1. Label Calculation Helper Function ---
 
@@ -148,14 +148,47 @@ def create_dataloader(batch_size: int, is_train: bool, scaler: StandardScaler = 
     print("Loading feature and EA date files...")
     consolidated_data = pd.read_pickle(os.path.join(DATA_DIR, FEATURE_FILENAME))
     ea_dates = pd.read_pickle(os.path.join(DATA_DIR, EA_FILENAME))
+
+    all_ea_dates = []
+    for ticker, ea_df in ea_dates.items():
+        # Ensure dates are clean Timestamps
+        ea_df['Earnings Date'] = pd.to_datetime(ea_df['Earnings Date'], errors='coerce').dt.tz_localize(None).dt.normalize()
+        ea_df.sort_values('Earnings Date', inplace=True)
+        all_ea_dates.extend(ea_df['Earnings Date'].dropna().tolist())
+        ea_dates[ticker] = ea_df
+    
+    if not all_ea_dates:
+         raise ValueError("No valid earnings dates found for splitting.")
+
+    # --- DETERMINE GLOBAL CUTOFF DATE (80% of total time span) ---
+    max_date = max(all_ea_dates)
+    min_date = max_date - dt.timedelta(days=365)
+    
+    # Calculate the date corresponding to 80% of the total duration
+    GLOBAL_CUTOFF_DATE = min_date + (max_date - min_date) * 0.87
+    
+    # --- FILTER THE EA DATES BASED ON THE GLOBAL CUTOFF ---
+    filtered_ea_dates = {}
+    for ticker, ea_df in ea_dates.items():
+        if is_train:
+            # Training: Use events ON or BEFORE the cutoff date
+            filtered_df = ea_df[ea_df['Earnings Date'] <= GLOBAL_CUTOFF_DATE].copy()
+        else:
+            # Testing: Use events STRICTLY AFTER the cutoff date
+            filtered_df = ea_df[ea_df['Earnings Date'] > GLOBAL_CUTOFF_DATE].copy()
+
+        if not filtered_df.empty:
+            filtered_ea_dates[ticker] = filtered_df
     
     # Create the Dataset
     dataset = StockDataset(
         consolidated_data=consolidated_data, 
-        ea_dates=ea_dates,
+        ea_dates=filtered_ea_dates,
         scaler=scaler,  # Pass existing scaler for test/validation sets
         is_train=is_train
     )
+
+    print(len(dataset))
     
     # Create the DataLoader
     dataloader = DataLoader(

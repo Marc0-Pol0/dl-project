@@ -26,11 +26,11 @@ OUTPUT_DIR = './data/processed/'
 # Variables
 start_date = dt.datetime(2024, 10, 1)
 end_date = dt.datetime(2025, 8, 1)
-FUND, STOCK, NEWS, DATES = False, False, True, False
-SAVE = False
+FUND, STOCK, NEWS, DATES = False, False, False, True
+SAVE = True
 
 # Load raw data
-obj = pd.read_pickle(DATA_DIR + '/DL_dataset(1).pkl')
+obj = pd.read_pickle(DATA_DIR + '/DL_dataset(2).pkl')
 
 # --- FUNDAMENTALS ---
 if FUND:
@@ -79,7 +79,7 @@ if FUND:
 
     # Save fundamentals dataset
     if SAVE:
-        pd.to_pickle(fundamentals_dict, OUTPUT_DIR + 'fundamentals.pkl')
+        pd.to_pickle(fundamentals_dict, OUTPUT_DIR + 'fundamentals_500.pkl')
 
 
 # --- STOCK VALUES ---
@@ -118,16 +118,14 @@ if STOCK:
 
     # Save stock values dataset
     if SAVE:
-        pd.to_pickle(stock_values_dict, OUTPUT_DIR + 'stock_values.pkl')
+        pd.to_pickle(stock_values_dict, OUTPUT_DIR + 'stock_values_500.pkl')
 
 
 # --- NEWS ---
 news_dict = {}
-i = 0
 # Iterate over each company in the dataset
 if NEWS:
     for id in obj.keys():
-        if i == 1: break
         # Extract ticker (Same as before)
         ticker = obj[id]['companyMapping']['Code'].item().replace('.US', '')
 
@@ -184,11 +182,11 @@ if NEWS:
 
         # Save to dictionary
         news_dict[ticker] = daily_sentiment
-        i += 1
+
         print(news_dict[ticker].head())
     # Save news dataset
     if SAVE:
-        pd.to_pickle(news_dict, OUTPUT_DIR + 'news.pkl')
+        pd.to_pickle(news_dict, OUTPUT_DIR + 'news_sentiment_500.pkl')
 
 
 # --- DATES ---
@@ -213,4 +211,4 @@ if DATES:
 
     # Save stock values dataset
     if SAVE:
-        pd.to_pickle(dates_dict, OUTPUT_DIR + 'earning_dates.pkl')
+        pd.to_pickle(dates_dict, OUTPUT_DIR + 'earning_dates_500.pkl')
