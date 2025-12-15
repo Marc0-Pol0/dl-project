@@ -1,5 +1,7 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+import math
 
 class StockLSTM(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers, output_size, dropout_rate=0.5):
@@ -48,7 +50,8 @@ class StockLSTM(nn.Module):
         # The output does NOT include Softmax here; that's typically done in the loss function 
         # (CrossEntropyLoss) or applied after the forward pass.
         return out
-    
+
+
 class PositionalEncoding(nn.Module):
     """Adds sine/cosine positional information to the input sequence."""
     def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
@@ -72,7 +75,8 @@ class PositionalEncoding(nn.Module):
             x: Tensor, shape (seq_len, batch_size, embedding_dim)
         """
         # Add positional encoding to the input sequence (transposed to match PE shape)
-        x = x + self.pe[:x.size(0)].squeeze(1) 
+        
+        x = x + self.pe[:x.size(1)].squeeze(1) 
         return self.dropout(x)
 
 # --- 2. Transformer Model ---
@@ -153,7 +157,6 @@ class StockTransformer(nn.Module):
         # logits shape: (batch_size, output_size)
         # No Softmax is included here, as it will be handled by nn.CrossEntropyLoss
         return logits
-
 
 # if __name__ == '__main__':
 #     # Example test run
