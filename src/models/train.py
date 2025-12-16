@@ -23,7 +23,7 @@ class Config:
     PATIENCE = 7         # Early Stopping Patience
     INPUT_SIZE = 21
     OUTPUT_SIZE = 3
-    MODEL_SAVE_PATH = './networks/transformer.pth'
+    MODEL_SAVE_PATH = './networks/lstm_sgd.pth'
     DIM_FFN = 4 * HIDDEN_SIZE
     NUMBER_OF_ENCODERS = 2
     NUMBER_OF_HEADS = 4
@@ -276,7 +276,7 @@ def run_testing(model: nn.Module, dataloader: DataLoader, criterion: nn.Module, 
 
 
 if __name__ == '__main__':
-    run_training()
+    # run_training()
 
     device = setup_device()
 

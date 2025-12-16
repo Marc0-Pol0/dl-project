@@ -6,6 +6,8 @@ import os
 import datetime as dt
 from sklearn.preprocessing import StandardScaler
 from typing import Dict, List, Tuple
+from utils import oversample_minority_classes
+from collections import Counter
 
 # --- Configuration ---
 DATA_DIR = './data/trainable/' 
@@ -29,7 +31,7 @@ def calculate_label(ticker: str, ea_date: dt.datetime, consolidated_data: Dict[s
     # 1. Get the stock price the day BEFORE the EA (Sequence End)
     # The last day of the 30-day sequence is ea_date - 1 day
     ea_date = pd.to_datetime(ea_date)
-    pre_ea_date = ea_date - dt.timedelta(days=1)
+    pre_ea_date = ea_date - dt.timedelta(days=2)
     
     # Safely get the 'adj_price' for the pre-EA date
     try:
@@ -187,8 +189,6 @@ def create_dataloader(batch_size: int, is_train: bool, scaler: StandardScaler = 
         scaler=scaler,  # Pass existing scaler for test/validation sets
         is_train=is_train
     )
-
-    print(len(dataset))
     
     # Create the DataLoader
     dataloader = DataLoader(
@@ -200,3 +200,6 @@ def create_dataloader(batch_size: int, is_train: bool, scaler: StandardScaler = 
     )
     
     return dataloader, dataset.scaler
+
+
+    
