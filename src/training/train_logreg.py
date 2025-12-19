@@ -1,28 +1,25 @@
 """
 Train and evaluate a logistic regression baseline on the earnings-event dataset.
 
-This script implements a classical, interpretable baseline model using L2-regularized logistic regression 
-with standardized features.
-
 Pipeline:
 1. Load the event-level earnings dataset
-2. Select numerical features by prefix ("sent_", "f_")
-3. Perform time-based train / validation / test splits
-4. Apply preprocessing (median imputation + standardization)
-5. Train a logistic regression classifier (optionally class-balanced)
-6. Evaluate performance on train / val / test splits
-7. Save the trained model bundle for later inference or comparison
+2. Sort by time
+3. Select numerical features by prefix ("sent_", "f_")
+4. Perform time-based train / validation / test splits
+5. Apply preprocessing (median imputation + standardization)
+6. Train a logistic regression classifier (optionally class-balanced)
+7. Evaluate performance on train / val / test splits
+8. Save a trained model bundle for later inference or comparison
 
 Key properties:
 - Strictly time-based splits (no leakage)
 - Handles class imbalance via class weighting
-- Serves as a reference baseline for more complex models (XGBoost, MLP, LSTM, Transformer)
+- Interpretable baseline for more complex models (XGBoost, MLP, LSTM, Transformer)
 
 Outputs:
 - Printed evaluation metrics (accuracy, AUC, log loss, Brier score)
 - Serialized model bundle (.joblib) including pipeline and configuration
 """
-
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,9 +42,9 @@ from train_utils import (
     read_table,
     time_split,
     time_val_split,
-    run_split,
 )
 
+# -------------------------- paths / split --------------------------
 
 DATA = Path("data/trainable/event_table_500.parquet")
 OUT = Path("networks/logreg_earnings_model.joblib")
@@ -55,8 +52,10 @@ OUT = Path("networks/logreg_earnings_model.joblib")
 SPLIT_DATE = "2025-05-01"
 VAL_TAIL_FRAC = 0.15
 
+# -------------------------- model hyperparams --------------------------
+
 C = 1.0
-MAX_ITER = 2000
+MAX_ITER = 10000
 NO_BALANCED = False
 RANDOM_STATE = 0
 
@@ -69,31 +68,21 @@ class LogRegConfig:
     random_state: int = 0
 
 
-def build_logreg_pipeline(feature_cols: list[str], cfg: LogRegConfig) -> Pipeline:
-    """Build a Logistic Regression pipeline with preprocessing."""
-    pre = ColumnTransformer(
-        transformers=[
-            (
-                "num",
-                Pipeline(
-                    steps=[
-                        ("impute", SimpleImputer(strategy="median")),
-                        ("scale", StandardScaler(with_mean=True, with_std=True)),
-                    ]
-                ),
-                feature_cols,
-            )
-        ],
-        remainder="drop",
+def build_logreg_pipeline(cfg: LogRegConfig) -> Pipeline:
+    pre = Pipeline(
+        steps=[
+            ("impute", SimpleImputer(strategy="median")),
+            ("scale", StandardScaler(with_mean=True, with_std=True)),
+        ]
     )
 
     clf = LogisticRegression(
         l1_ratio=0,
-        C=cfg.c,
+        C=float(cfg.c),
         solver="lbfgs",
-        max_iter=cfg.max_iter,
+        max_iter=int(cfg.max_iter),
         class_weight=cfg.class_weight,
-        random_state=cfg.random_state,
+        random_state=int(cfg.random_state),
     )
 
     return Pipeline(steps=[("pre", pre), ("clf", clf)])
@@ -120,8 +109,8 @@ def main() -> None:
     if split_cfg.date_col not in df.columns:
         raise KeyError(f"Missing date column: {split_cfg.date_col}")
 
-    df = ensure_sorted_datetime(df, split_cfg.date_col)
 
+    df = ensure_sorted_datetime(df, split_cfg.date_col)
     feature_cols = pick_feature_columns(df, split_cfg.feature_prefixes)
     if not feature_cols:
         raise ValueError(f"No feature columns found with prefixes: {split_cfg.feature_prefixes}")
@@ -133,13 +122,10 @@ def main() -> None:
     print("feature_cols:", len(feature_cols))
 
     lr_cfg = LogRegConfig(
-        c=C,
-        max_iter=MAX_ITER,
-        class_weight=None if NO_BALANCED else "balanced",
-        random_state=RANDOM_STATE,
+        c=C, max_iter=MAX_ITER, class_weight=None if NO_BALANCED else "balanced", random_state=RANDOM_STATE
     )
 
-    pipe = build_logreg_pipeline(feature_cols, lr_cfg)
+    pipe = build_logreg_pipeline(lr_cfg)
 
     x_tr, y_tr = get_xy(train, feature_cols, split_cfg.label_col)
     pipe.fit(x_tr, y_tr)
@@ -149,7 +135,13 @@ def main() -> None:
     run_split("test", pipe, test, feature_cols, split_cfg.label_col)
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    bundle = {"pipeline": pipe, "feature_cols": feature_cols, "split_cfg": split_cfg, "logreg_cfg": lr_cfg}
+    bundle = {
+        "pipeline": pipe,
+        "feature_cols": feature_cols,
+        "split_cfg": split_cfg,
+        "logreg_cfg": lr_cfg,
+        "data_path": str(DATA),
+    }
     joblib.dump(bundle, OUT)
     print(f"\nSaved model bundle to: {OUT}")
 

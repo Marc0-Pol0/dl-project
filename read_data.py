@@ -1,7 +1,11 @@
 import pickle
 import pandas as pd
 
-with open("data/trainable/earning_dates_500.pkl", "rb") as f:
+
+# file = "final_data_500.pkl"
+file = "earning_dates_500.pkl"
+
+with open(f"data/trainable/{file}", "rb") as f:
     data = pickle.load(f)
 
 print("Type:", type(data))

@@ -2,26 +2,32 @@
 Build an earnings-event table (features + label) from:
 
 1) final_data_500.pkl:
-   dict[ticker] -> DataFrame indexed by trading-day DatetimeIndex, with columns like
-   positive/negative/neutral + fundamentals + adj_price + MA3/MA6.
+   dict[ticker] -> DataFrame indexed by trading-day DatetimeIndex (tz-naive preferred),
+   with columns like positive/negative/neutral + fundamentals + adj_price + MA3/MA6.
 
 2) earning_dates_500.pkl:
    dict[ticker] -> DataFrame with column "Earnings Date" (tz-aware, America/New_York).
 
 Output:
   A single event-level DataFrame with one row per earnings event in the modeling window:
-    - ticker, earnings_ts_ny, earnings_day (mapped trading day), event_type (BMO/AMC), feature_day
+    - ticker, earnings_ts_ny, calendar_day_ny, earnings_day (mapped trading day), event_type (BMO/AMC), feature_day
     - return, label_up (binary), abs_return
-    - aggregated sentiment over a lookback window (mean/std/trend + pos-neg)
-    - snapshot of per-day features from final_data at feature_day (prefixed "f_")
+    - aggregated sentiment over a lookback window (last N trading days; mean/std/trend + pos-neg)
+    - snapshot of selected per-day features from final_data at feature_day (prefixed "f_")
     - event_id (ticker + timestamp) for debugging
 
-Leakage controls (defaults are conservative):
-  - For BMO: exclude T-1 (day before earnings), so last included sentiment day is T-2
-  - For AMC: exclude T (earnings day), so last included sentiment day is T-1
+Leakage controls (trading-day accurate; defaults are conservative):
+  - For BMO: exclude T-1 (day before earnings) => last included sentiment day is T-2 trading day
+  - For AMC: exclude T (earnings day)          => last included sentiment day is T-1 trading day
   - Features used:
         BMO -> previous trading day (pre-announcement close)
         AMC -> same trading day (close before announcement)
+
+Other controls:
+  - Trading-day mapping uses event_type and date presence in index:
+        BMO: map to trading day on date if available, else next trading day
+        AMC: map to trading day on date if available, else previous trading day (otherwise drop)
+  - Mapping returns None if outside coverage
 """
 
 import math
@@ -40,7 +46,7 @@ FINAL_DATA = Path("./data/trainable/final_data_500.pkl")
 EARNING_DATES = Path("./data/trainable/earning_dates_500.pkl")
 OUT = Path("./data/trainable/event_table_500.parquet")
 
-LOOKBACK_DAYS = 30
+LOOKBACK_TRADING_DAYS = 30
 PRICE_COL = "adj_price"
 
 KEEP_UNKNOWN_TIMING = False
@@ -50,20 +56,33 @@ NY_TZ = "America/New_York"
 # -------------------------- helpers --------------------------
 
 def load_pickle(path: Path) -> Any:
-    """Load a pickle file from the given path."""
     with open(path, "rb") as f:
         return pickle.load(f)
 
 
 def ensure_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
-    """Ensure df has a tz-naive DatetimeIndex sorted in ascending order."""
+    """
+    Ensure the DataFrame index is a sorted, timezone-naive DatetimeIndex, 
+    and restrict to (approx) trading days by dropping weekends.
+    """
     if not isinstance(df.index, pd.DatetimeIndex):
         raise TypeError(f"Expected DatetimeIndex, got {type(df.index)}")
-    if df.index.tz is not None:
-        # Keep trading index tz-naive for consistent comparisons
-        df = df.copy()
-        df.index = df.index.tz_convert(None)
-    return df.sort_index()
+
+    out = df.sort_index()
+
+    # Make tz-naive if needed
+    if out.index.tz is not None:
+        out = out.copy()
+        out.index = out.index.tz_convert(None)
+
+    # Drop duplicate dates if any (keep last by default)
+    if out.index.has_duplicates:
+        out = out[~out.index.duplicated(keep="last")]
+
+    # Drop weekends (dayofweek: Mon=0 ... Sun=6)
+    out = out[out.index.dayofweek < 5]
+
+    return out
 
 
 def to_ny_timestamp(x: Any) -> pd.Timestamp:
@@ -86,42 +105,53 @@ def classify_event_type(earn_ts_ny: pd.Timestamp) -> str:
     return "UNKNOWN"
 
 
-def map_to_next_trading_day(trading_index: pd.DatetimeIndex, day: pd.Timestamp) -> pd.Timestamp:
-    """Map a (tz-naive) midnight date to the next available trading day in trading_index."""
-    day = pd.Timestamp(day.date())
-    pos = int(trading_index.searchsorted(day, side="left"))
-    if pos < 0:
-        pos = 0
+def map_trading_day_or_next(trading_index: pd.DatetimeIndex, day: pd.Timestamp) -> pd.Timestamp | None:
+    """If day is a trading day, return it; else return next trading day. None if out of range."""
+    day0 = pd.Timestamp(day.date())
+    pos = int(trading_index.searchsorted(day0, side="left"))
     if pos >= len(trading_index):
-        pos = len(trading_index) - 1
+        return None
     return trading_index[pos]
+
+
+def map_trading_day_or_prev(trading_index: pd.DatetimeIndex, day: pd.Timestamp) -> pd.Timestamp | None:
+    """If day is a trading day, return it; else return previous trading day. None if out of range."""
+    day0 = pd.Timestamp(day.date())
+    pos = int(trading_index.searchsorted(day0, side="left"))
+    if pos < len(trading_index) and trading_index[pos] == day0:
+        return trading_index[pos]
+    # insertion point pos: previous is pos-1
+    prev_pos = pos - 1
+    if prev_pos < 0 or prev_pos >= len(trading_index):
+        return None
+    return trading_index[prev_pos]
 
 
 def previous_trading_day(trading_index: pd.DatetimeIndex, day: pd.Timestamp) -> pd.Timestamp | None:
     """Return the previous trading day before 'day', or None if none exists."""
     pos = int(trading_index.searchsorted(day, side="left"))
-    if pos <= 0:
+    # if exact match at pos, prev is pos-1; otherwise prev is pos-1 as well
+    prev_pos = pos - 1
+    if prev_pos < 0:
         return None
-    if pos < len(trading_index) and trading_index[pos] == day:
-        return trading_index[pos - 1]
-    return trading_index[pos - 1]
+    return trading_index[prev_pos]
 
 
 def next_trading_day(trading_index: pd.DatetimeIndex, day: pd.Timestamp) -> pd.Timestamp | None:
     """Return the next trading day after 'day', or None if none exists."""
     pos = int(trading_index.searchsorted(day, side="left"))
-    if pos >= len(trading_index):
+    if pos < len(trading_index) and trading_index[pos] == day:
+        nxt_pos = pos + 1
+    else:
+        nxt_pos = pos
+    if nxt_pos >= len(trading_index):
         return None
-    if trading_index[pos] == day:
-        if pos + 1 >= len(trading_index):
-            return None
-        return trading_index[pos + 1]
-    return trading_index[pos]
+    return trading_index[nxt_pos]
 
 
 def linreg_slope(y: np.ndarray) -> float:
     """Slope of y on x where x = 0..n-1. Returns NaN if ill-posed."""
-    n = len(y)
+    n = int(len(y))
     if n < 2:
         return float("nan")
     x = np.arange(n, dtype=float)
@@ -133,43 +163,65 @@ def linreg_slope(y: np.ndarray) -> float:
     return float((vx * (y - y.mean())).sum() / denom)
 
 
+def event_id(ticker: str, ts_ny: pd.Timestamp) -> str:
+    return f"{ticker}_{ts_ny.strftime('%Y%m%dT%H%M%S%z')}"
+
+
+# -------------------------- build config --------------------------
+
 @dataclass(frozen=True)
 class BuildConfig:
-    lookback_days: int = 30
+    lookback_trading_days: int = 30
     price_col: str = "adj_price"
     sentiment_cols: tuple[str, str, str] = ("positive", "negative", "neutral")
+    # Snapshot inclusion/exclusion
+    include_snapshot_cols: tuple[str, ...] | None = None  # if set, use only these (must exist)
+    exclude_snapshot_cols: tuple[str, ...] = ("positive", "negative", "neutral")  # always excluded by default
+    exclude_snapshot_prefixes: tuple[str, ...] = ("sent_",)
 
 
-def sentiment_aggregates(df: pd.DataFrame, last_included_day: pd.Timestamp, cfg: BuildConfig) -> dict[str, float]:
-    """Aggregate sentiment over a fixed lookback window ending at last_included_day (inclusive)."""
+# -------------------------- feature builders --------------------------
+
+def select_last_n_trading_days(trading_index: pd.DatetimeIndex, end_day: pd.Timestamp, n: int) -> pd.DatetimeIndex:
+    """Return the last n trading days ending at end_day (inclusive). Empty if end_day not in index."""
+    if end_day not in trading_index:
+        return trading_index[:0]
+    end_pos = int(trading_index.get_loc(end_day))
+    start_pos = max(0, end_pos - n + 1)
+    return trading_index[start_pos : end_pos + 1]
+
+
+def sentiment_aggregates_trading_days(
+    df: pd.DataFrame, trading_index: pd.DatetimeIndex, last_included_day: pd.Timestamp, cfg: BuildConfig
+) -> dict[str, float | int]:
+    """Aggregate sentiment over last N trading days ending at last_included_day (inclusive)."""
     pos_col, neg_col, neu_col = cfg.sentiment_cols
     for c in (pos_col, neg_col, neu_col):
         if c not in df.columns:
             raise KeyError(f"Missing sentiment column: {c}")
 
-    end_day = pd.Timestamp(last_included_day)
-    start_day = end_day - pd.Timedelta(days=cfg.lookback_days - 1)
+    days = select_last_n_trading_days(trading_index, last_included_day, cfg.lookback_trading_days)
+    out: dict[str, float | int] = {}
 
-    window = df.loc[(df.index >= start_day) & (df.index <= end_day), [pos_col, neg_col, neu_col]]
-    out: dict[str, float] = {}
-
-    if len(window) == 0:
-        for name in ["mean", "std", "trend"]:
+    if len(days) == 0:
+        for name in ("mean", "std", "trend"):
             out[f"sent_pos_{name}"] = float("nan")
             out[f"sent_neg_{name}"] = float("nan")
             out[f"sent_neu_{name}"] = float("nan")
         out["sent_pos_minus_neg_mean"] = float("nan")
-        out["sent_days_used"] = 0.0
+        out["sent_days_used"] = 0
         return out
 
-    out["sent_days_used"] = float(len(window))
-    for col, pref in [(pos_col, "pos"), (neg_col, "neg"), (neu_col, "neu")]:
+    window = df.loc[days, [pos_col, neg_col, neu_col]]
+    out["sent_days_used"] = int(len(window))
+
+    for col, pref in ((pos_col, "pos"), (neg_col, "neg"), (neu_col, "neu")):
         s = window[col].astype(float)
         out[f"sent_{pref}_mean"] = float(s.mean())
         out[f"sent_{pref}_std"] = float(s.std(ddof=0))
         out[f"sent_{pref}_trend"] = linreg_slope(s.to_numpy())
 
-    out["sent_pos_minus_neg_mean"] = out["sent_pos_mean"] - out["sent_neg_mean"]
+    out["sent_pos_minus_neg_mean"] = float(out["sent_pos_mean"]) - float(out["sent_neg_mean"])
     return out
 
 
@@ -215,9 +267,25 @@ def compute_event_return_and_label(
     return None
 
 
-def event_id(ticker: str, ts_ny: pd.Timestamp) -> str:
-    """Create a unique event ID from ticker and NY timestamp."""
-    return f"{ticker}_{ts_ny.strftime('%Y%m%dT%H%M%S%z')}"
+def snapshot_features(df: pd.DataFrame, feature_day: pd.Timestamp, cfg: BuildConfig) -> dict[str, object]:
+    """Snapshot a controlled set of columns at feature_day, prefixed by f_."""
+    if feature_day not in df.index:
+        return {}
+
+    if cfg.include_snapshot_cols is not None:
+        cols = [c for c in cfg.include_snapshot_cols if c in df.columns]
+    else:
+        exclude = set(cfg.exclude_snapshot_cols)
+        cols = []
+        for c in df.columns:
+            if c in exclude:
+                continue
+            if any(c.startswith(p) for p in cfg.exclude_snapshot_prefixes):
+                continue
+            cols.append(c)
+
+    snap = df.loc[feature_day, cols].to_dict()
+    return {f"f_{k}": v for k, v in snap.items()}
 
 
 # -------------------------- main build --------------------------
@@ -228,87 +296,117 @@ def build_event_table(
     cfg: BuildConfig,
     drop_unknown_timing: bool = True,
 ) -> pd.DataFrame:
-    """Build the event table DataFrame from final_data and earning_dates."""
     tickers = sorted(set(final_data.keys()) & set(earning_dates.keys()))
     rows: list[dict[str, object]] = []
 
     dropped_nat = 0
     dropped_unknown = 0
     dropped_outside = 0
+    dropped_mapping = 0
     dropped_return = 0
+    dropped_exposure = 0  # cannot satisfy leakage rule (missing prev days)
 
     for t in tickers:
-        df = ensure_datetime_index(final_data[t])
-
-        start_day = df.index.min()
-        end_day = df.index.max()
-
-        e = earning_dates[t].copy()
-        if "Earnings Date" not in e.columns:
-            raise KeyError(f"{t}: earnings df missing 'Earnings Date' column")
-
-        earn_ts_ny = e["Earnings Date"].map(to_ny_timestamp)
-
-        for ts_ny in earn_ts_ny:
-            if pd.isna(ts_ny):
-                dropped_nat += 1
+        try:
+            df = ensure_datetime_index(final_data[t])
+            if len(df) == 0:
                 continue
+            idx = df.index
+            start_day = idx.min()
+            end_day = idx.max()
 
-            event_type = classify_event_type(ts_ny)
-            if event_type == "UNKNOWN":
-                if drop_unknown_timing:
+            e = earning_dates[t]
+            if "Earnings Date" not in e.columns:
+                raise KeyError(f"{t}: earnings df missing 'Earnings Date' column")
+
+            # Precompute timestamps, drop NaT
+            earn_ts_ny_series = e["Earnings Date"].map(to_ny_timestamp).dropna()
+            earn_ts_ny_series = earn_ts_ny_series.sort_values()
+
+            for ts_ny in earn_ts_ny_series:
+                if pd.isna(ts_ny):
+                    dropped_nat += 1
+                    continue
+
+                event_type = classify_event_type(ts_ny)
+                if event_type == "UNKNOWN" and drop_unknown_timing:
                     dropped_unknown += 1
                     continue
 
-            calendar_day = pd.Timestamp(ts_ny.date())  # naive midnight NY calendar day
+                calendar_day = pd.Timestamp(ts_ny.date())  # tz-naive NY calendar day at midnight
 
-            # Filter earnings to our coverage window up-front (avoid mapping 2021 -> index[0]).
-            if calendar_day < start_day or calendar_day > end_day:
-                dropped_outside += 1
-                continue
+                # Cheap window filter on calendar day (still keep mapping strict below)
+                if calendar_day < start_day or calendar_day > end_day:
+                    dropped_outside += 1
+                    continue
 
-            # Map to next trading day in our index (handles weekends/holidays).
-            event_day = map_to_next_trading_day(df.index, calendar_day)
+                # Map to announcement trading day using event_type-aware logic.
+                if event_type == "BMO":
+                    event_day = map_trading_day_or_next(idx, calendar_day)
+                elif event_type == "AMC":
+                    event_day = map_trading_day_or_prev(idx, calendar_day)
+                else:
+                    # If UNKNOWN is kept, here is where a policy should be implemented
+                    dropped_mapping += 1
+                    continue
 
-            ret_info = compute_event_return_and_label(df, event_day, event_type, cfg)
-            if ret_info is None:
-                dropped_return += 1
-                continue
-            ret, label_up, abs_ret, feature_day = ret_info
+                if event_day is None or event_day < start_day or event_day > end_day:
+                    dropped_mapping += 1
+                    continue
 
-            # Explicit leakage rule for sentiment last included day:
-            # - BMO: exclude T-1 => last included = T-2
-            # - AMC: exclude T   => last included = T-1
-            if event_type == "BMO":
-                last_included = event_day - pd.Timedelta(days=2)
-            else:  # AMC or UNKNOWN (if kept)
-                last_included = event_day - pd.Timedelta(days=1)
+                ret_info = compute_event_return_and_label(df, event_day, event_type, cfg)
+                if ret_info is None:
+                    dropped_return += 1
+                    continue
+                ret, label_up, abs_ret, feature_day = ret_info
 
-            sent_feats = sentiment_aggregates(df, last_included, cfg)
+                # Leakage: compute last included sentiment day in *trading days*
+                if event_type == "BMO":
+                    t_minus_1 = previous_trading_day(idx, event_day)
+                    if t_minus_1 is None:
+                        dropped_exposure += 1
+                        continue
+                    t_minus_2 = previous_trading_day(idx, t_minus_1)
+                    if t_minus_2 is None:
+                        dropped_exposure += 1
+                        continue
+                    last_included = t_minus_2
+                else:  # AMC
+                    t_minus_1 = previous_trading_day(idx, event_day)
+                    if t_minus_1 is None:
+                        dropped_exposure += 1
+                        continue
+                    last_included = t_minus_1
 
-            snap = df.loc[feature_day].to_dict()
-            snap = {f"f_{k}": v for k, v in snap.items()}
+                sent_feats = sentiment_aggregates_trading_days(df, idx, last_included, cfg)
+                snap = snapshot_features(df, feature_day, cfg)
 
-            row: dict[str, object] = {
-                "event_id": event_id(t, ts_ny),
-                "ticker": t,
-                "earnings_ts_ny": ts_ny,
-                "event_type": event_type,
-                "calendar_day_ny": calendar_day,
-                "earnings_day": event_day,
-                "feature_day": feature_day,
-                "return": float(ret),
-                "abs_return": float(abs_ret),
-                "label_up": int(label_up),
-            }
-            row.update(sent_feats)
-            row.update(snap)
-            rows.append(row)
+                row: dict[str, object] = {
+                    "event_id": event_id(t, ts_ny),
+                    "ticker": t,
+                    "earnings_ts_ny": ts_ny,
+                    "event_type": event_type,
+                    "calendar_day_ny": calendar_day,
+                    "earnings_day": event_day,
+                    "feature_day": feature_day,
+                    "return": float(ret),
+                    "abs_return": float(abs_ret),
+                    "label_up": int(label_up),
+                }
+                row.update(sent_feats)
+                row.update(snap)
+                rows.append(row)
+
+        except Exception as ex:
+            # Fail closed per ticker: count and continue
+            print(f"[WARN] ticker={t} failed with: {type(ex).__name__}: {ex}")
 
     out = pd.DataFrame(rows)
+
     print(
-        f"[INFO] dropped: NaT={dropped_nat}, UNKNOWN={dropped_unknown}, outside_window={dropped_outside}, "
-        f"no_return={dropped_return}"
+        "[INFO] dropped: "
+        f"NaT={dropped_nat}, UNKNOWN={dropped_unknown}, outside_window={dropped_outside}, "
+        f"mapping_failed={dropped_mapping}, no_return={dropped_return}, leakage_unsatisfied={dropped_exposure}"
     )
 
     if len(out) == 0:
@@ -322,9 +420,22 @@ def build_event_table(
     out["feature_day"] = pd.to_datetime(out["feature_day"])
     out["calendar_day_ny"] = pd.to_datetime(out["calendar_day_ny"])
 
-    # Cast ML features to float32 for lighter training payload
-    feature_cols = [c for c in out.columns if c.startswith("f_") or c.startswith("sent_")]
-    out[feature_cols] = out[feature_cols].astype(np.float32)
+    # Types: event_type categorical
+    out["event_type"] = out["event_type"].astype("category")
+
+    # Cast ML features:
+    # - float features to float32
+    # - sent_days_used to int32 (keep as integer)
+    sent_days_col = "sent_days_used"
+    float_feature_cols = [
+        c 
+        for c in out.columns 
+        if c.startswith("f_") or (c.startswith("sent_") and c != sent_days_col)
+    ]
+    out[float_feature_cols] = out[float_feature_cols].astype(np.float32)
+
+    if sent_days_col in out.columns:
+        out[sent_days_col] = out[sent_days_col].astype(np.int32)
 
     return out
 
@@ -333,7 +444,15 @@ def main() -> None:
     final_data = load_pickle(FINAL_DATA)
     earning_dates = load_pickle(EARNING_DATES)
 
-    cfg = BuildConfig(lookback_days=LOOKBACK_DAYS, price_col=PRICE_COL)
+    cfg = BuildConfig(
+        lookback_trading_days=LOOKBACK_TRADING_DAYS,
+        price_col=PRICE_COL,
+        sentiment_cols=("positive", "negative", "neutral"),
+        include_snapshot_cols=None,
+        exclude_snapshot_cols=("positive", "negative", "neutral"),
+        exclude_snapshot_prefixes=("sent_",),
+    )
+
     table = build_event_table(
         final_data=final_data,
         earning_dates=earning_dates,

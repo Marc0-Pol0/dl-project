@@ -1,13 +1,10 @@
 """
 Train and evaluate an MLP baseline on the earnings-event dataset.
 
-This script mirrors train_logreg.py, but replaces Logistic Regression with a simple
-feed-forward neural network (MLP) implemented in PyTorch.
-
 Pipeline:
 1. Load the event-level earnings dataset
-2. Select numerical features by prefix ("sent_", "f_")
-3. Perform time-based train / validation / test splits
+2. Sort by time
+3. Select numerical features by prefix ("sent_", "f_")
 4. Fit preprocessing on train only: median imputation + standardization
 5. Train an MLP with BCEWithLogitsLoss (optionally pos_weight for imbalance)
 6. Evaluate performance on train / val / test splits
@@ -24,10 +21,10 @@ from pathlib import Path
 import joblib
 import numpy as np
 import torch
-from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import roc_auc_score
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -43,27 +40,31 @@ from train_utils import (
     time_val_split,
 )
 
+# -------------------------- paths / split --------------------------
+
 DATA = Path("data/trainable/event_table_500.parquet")
 OUT = Path("networks/mlp_earnings_model.joblib")
 
 SPLIT_DATE = "2025-05-01"
 VAL_TAIL_FRAC = 0.15
 
+# -------------------------- runtime --------------------------
+
 RANDOM_STATE = 0
 if torch.cuda.is_available():
     DEVICE = "cuda"
-elif torch.backends.mps.is_available():
+elif torch.backends.mps.is_available():# -------------------------- model hyperparams --------------------------
     DEVICE = "mps"
 else:
     DEVICE = "cpu"
 
 
-# Training defaults (tune later)
+
 HIDDEN_DIMS = (256, 128)
 DROPOUT = 0.2
 LR = 1e-3
 WEIGHT_DECAY = 1e-4
-BATCH_SIZE = 256
+BATCH_SIZE = 64
 MAX_EPOCHS = 100
 PATIENCE = 10
 USE_POS_WEIGHT = True
@@ -75,7 +76,7 @@ class MLPConfig:
     dropout: float = 0.2
     lr: float = 1e-3
     weight_decay: float = 1e-4
-    batch_size: int = 256
+    batch_size: int = 64
     max_epochs: int = 100
     patience: int = 10
     use_pos_weight: bool = True
@@ -84,32 +85,25 @@ class MLPConfig:
 
 
 def set_seeds(seed: int) -> None:
-    """Set random seeds for reproducibility."""
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+    # may affect speed
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
-def build_preprocessor(feature_cols: list[str]) -> ColumnTransformer:
+def build_preprocessor() -> Pipeline:
     """
-    Build a preprocessing ColumnTransformer for numerical features:
-    - Median imputation for missing values
-    - Standardization (zero mean, unit variance)
+    Preprocessor for numeric arrays:
+    - median imputation
+    - standardization
     """
-    return ColumnTransformer(
-        transformers=[
-            (
-                "num",
-                Pipeline(
-                    steps=[
-                        ("impute", SimpleImputer(strategy="median")),
-                        ("scale", StandardScaler(with_mean=True, with_std=True)),
-                    ]
-                ),
-                feature_cols,
-            )
-        ],
-        remainder="drop",
+    return Pipeline(
+        steps=[
+            ("impute", SimpleImputer(strategy="median")),
+            ("scale", StandardScaler(with_mean=True, with_std=True)),
+        ]
     )
 
 
@@ -117,13 +111,13 @@ class MLP(nn.Module):
     def __init__(self, in_dim: int, hidden_dims: tuple[int, ...], dropout: float) -> None:
         super().__init__()
         layers: list[nn.Module] = []
-        d = in_dim
+        d = int(in_dim)
         for h in hidden_dims:
-            layers.append(nn.Linear(d, h))
+            layers.append(nn.Linear(d, int(h)))
             layers.append(nn.ReLU())
             if dropout > 0.0:
-                layers.append(nn.Dropout(dropout))
-            d = h
+                layers.append(nn.Dropout(float(dropout)))
+            d = int(h)
         layers.append(nn.Linear(d, 1))
         self.net = nn.Sequential(*layers)
 
@@ -131,24 +125,19 @@ class MLP(nn.Module):
         return self.net(x).squeeze(-1)
 
 
-def to_tensors(x: np.ndarray, y: np.ndarray, device: str) -> tuple[torch.Tensor, torch.Tensor]:
-    """Convert numpy arrays to PyTorch tensors on the specified device."""
-    xt = torch.from_numpy(x.astype(np.float32)).to(device)
-    yt = torch.from_numpy(y.astype(np.float32)).to(device)
-    return xt, yt
-
-
 def make_loader(x: np.ndarray, y: np.ndarray, batch_size: int, shuffle: bool) -> DataLoader:
-    """Create a DataLoader from numpy arrays."""
-    ds = TensorDataset(torch.from_numpy(x.astype(np.float32)), torch.from_numpy(y.astype(np.float32)))
-    return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, drop_last=False)
+    ds = TensorDataset(
+        torch.from_numpy(np.asarray(x, dtype=np.float32)),
+        torch.from_numpy(np.asarray(y, dtype=np.float32)),
+    )
+    return DataLoader(ds, batch_size=int(batch_size), shuffle=bool(shuffle), drop_last=False)
 
 
 @torch.no_grad()
 def predict_proba(model: nn.Module, x: np.ndarray, batch_size: int, device: str) -> np.ndarray:
-    """Predict probabilities using the MLP model on input x."""
     model.eval()
-    loader = DataLoader(torch.from_numpy(x.astype(np.float32)), batch_size=batch_size, shuffle=False)
+    x_t = torch.from_numpy(np.asarray(x, dtype=np.float32))
+    loader = DataLoader(x_t, batch_size=int(batch_size), shuffle=False, drop_last=False)
     probs: list[np.ndarray] = []
     for xb in loader:
         xb = xb.to(device)
@@ -159,11 +148,10 @@ def predict_proba(model: nn.Module, x: np.ndarray, batch_size: int, device: str)
 
 
 def compute_pos_weight(y_train: np.ndarray) -> float:
-    """Compute pos_weight = (#neg / #pos) for imbalanced binary classification."""
-    y = y_train.astype(int)
+    y = np.asarray(y_train).astype(int)
     pos = int((y == 1).sum())
     neg = int((y == 0).sum())
-    if pos == 0:
+    if pos <= 0:
         return 1.0
     return float(neg / pos)
 
@@ -171,29 +159,27 @@ def compute_pos_weight(y_train: np.ndarray) -> float:
 def train_one_epoch(
     model: nn.Module, loader: DataLoader, opt: torch.optim.Optimizer, loss_fn: nn.Module, device: str
 ) -> float:
-    """
-    Train the model for one epoch over the data in loader.
-    Returns the average loss over the epoch.
-    """
     model.train()
     total = 0.0
     n = 0
     for xb, yb in loader:
         xb = xb.to(device)
         yb = yb.to(device)
+
         opt.zero_grad(set_to_none=True)
         logits = model(xb)
         loss = loss_fn(logits, yb)
         loss.backward()
         opt.step()
+
         bs = int(xb.shape[0])
         total += float(loss.item()) * bs
         n += bs
+
     return total / max(1, n)
 
 
 def run_split(name: str, model: nn.Module, x: np.ndarray, y: np.ndarray, cfg: MLPConfig) -> dict[str, float]:
-    """Run evaluation on a data split and print metrics."""
     print(f"\n[{name}]")
     prob = predict_proba(model, x, cfg.batch_size, cfg.device)
     return eval_binary(y, prob, thresh=0.5)
@@ -211,7 +197,6 @@ def main() -> None:
         raise KeyError(f"Missing date column: {split_cfg.date_col}")
 
     df = ensure_sorted_datetime(df, split_cfg.date_col)
-
     feature_cols = pick_feature_columns(df, split_cfg.feature_prefixes)
     if not feature_cols:
         raise ValueError(f"No feature columns found with prefixes: {split_cfg.feature_prefixes}")
@@ -223,14 +208,19 @@ def main() -> None:
     print("feature_cols:", len(feature_cols))
     print("device:", DEVICE)
 
-    x_tr_df, y_tr = get_xy(train, feature_cols, split_cfg.label_col)
-    x_va_df, y_va = get_xy(val, feature_cols, split_cfg.label_col) if len(val) else (val[feature_cols], np.array([]))
-    x_te_df, y_te = get_xy(test, feature_cols, split_cfg.label_col)
+    x_tr, y_tr = get_xy(train, feature_cols, split_cfg.label_col)
+    x_te, y_te = get_xy(test, feature_cols, split_cfg.label_col)
 
-    pre = build_preprocessor(feature_cols)
-    x_tr = pre.fit_transform(x_tr_df)
-    x_va = pre.transform(x_va_df) if len(val) else np.zeros((0, x_tr.shape[1]), dtype=np.float32)
-    x_te = pre.transform(x_te_df)
+    if len(val) > 0:
+        x_va, y_va = get_xy(val, feature_cols, split_cfg.label_col)
+    else:
+        x_va = np.zeros((0, x_tr.shape[1]), dtype=np.float32)
+        y_va = np.zeros((0,), dtype=np.int64)
+
+    pre = build_preprocessor()
+    x_tr = pre.fit_transform(x_tr)
+    x_te = pre.transform(x_te)
+    x_va = pre.transform(x_va) if len(val) > 0 else x_va
 
     x_tr = np.asarray(x_tr, dtype=np.float32)
     x_va = np.asarray(x_va, dtype=np.float32)
@@ -250,20 +240,25 @@ def main() -> None:
     )
 
     model = MLP(in_dim=int(x_tr.shape[1]), hidden_dims=cfg.hidden_dims, dropout=cfg.dropout).to(cfg.device)
-    opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+    opt = torch.optim.AdamW(model.parameters(), lr=float(cfg.lr), weight_decay=float(cfg.weight_decay))
 
     pos_w = compute_pos_weight(y_tr) if cfg.use_pos_weight else 1.0
     if cfg.use_pos_weight:
         print(f"pos_weight (neg/pos) on train: {pos_w:.4f}")
-    loss_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_w, dtype=torch.float32, device=cfg.device))
+
+    # Only pass pos_weight if requested (and always as a tensor on device)
+    if cfg.use_pos_weight:
+        loss_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_w, dtype=torch.float32, device=cfg.device))
+    else:
+        loss_fn = nn.BCEWithLogitsLoss()
 
     train_loader = make_loader(x_tr, y_tr, cfg.batch_size, shuffle=True)
 
-    best_state = None
+    best_state: dict[str, torch.Tensor] | None = None
     best_val_auc = -1.0
-    patience_left = cfg.patience
+    patience_left = int(cfg.patience)
 
-    for epoch in range(1, cfg.max_epochs + 1):
+    for epoch in range(1, int(cfg.max_epochs) + 1):
         tr_loss = train_one_epoch(model, train_loader, opt, loss_fn, cfg.device)
 
         if len(val) == 0:
@@ -271,15 +266,13 @@ def main() -> None:
             continue
 
         val_prob = predict_proba(model, x_va, cfg.batch_size, cfg.device)
-        val_auc = float("nan") if len(np.unique(y_va)) <= 1 else float(
-            __import__("sklearn.metrics").metrics.roc_auc_score(y_va, val_prob)
-        )
+        val_auc = float("nan") if len(np.unique(y_va)) <= 1 else float(roc_auc_score(y_va, val_prob))
         print(f"epoch {epoch:03d} | train_loss={tr_loss:.5f} | val_auc={val_auc:.4f}")
 
         if np.isfinite(val_auc) and val_auc > best_val_auc + 1e-6:
             best_val_auc = val_auc
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-            patience_left = cfg.patience
+            patience_left = int(cfg.patience)
         else:
             patience_left -= 1
             if patience_left <= 0:
@@ -290,7 +283,7 @@ def main() -> None:
         model.load_state_dict(best_state)
 
     run_split("train", model, x_tr, y_tr, cfg)
-    if len(val):
+    if len(val) > 0:
         run_split("val", model, x_va, y_va, cfg)
     run_split("test", model, x_te, y_te, cfg)
 
@@ -301,6 +294,7 @@ def main() -> None:
         "feature_cols": feature_cols,
         "split_cfg": split_cfg,
         "mlp_cfg": cfg,
+        "data_path": str(DATA),
     }
     joblib.dump(bundle, OUT)
     print(f"\nSaved model bundle to: {OUT}")

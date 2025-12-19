@@ -93,9 +93,9 @@ DROPOUT = 0.2
 
 LR = 1e-3
 WEIGHT_DECAY = 1e-4
-BATCH_SIZE = 256
-MAX_EPOCHS = 60
-PATIENCE = 8
+BATCH_SIZE = 64
+MAX_EPOCHS = 100
+PATIENCE = 10
 USE_POS_WEIGHT = True
 
 
@@ -109,9 +109,9 @@ class TransformerConfig:
     dropout: float = 0.2
     lr: float = 1e-3
     weight_decay: float = 1e-4
-    batch_size: int = 256
-    max_epochs: int = 60
-    patience: int = 8
+    batch_size: int = 64
+    max_epochs: int = 100
+    patience: int = 10
     use_pos_weight: bool = True
     random_state: int = 0
     device: str = "cpu"

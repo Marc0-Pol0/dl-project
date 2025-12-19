@@ -1,12 +1,10 @@
 """
 Train and evaluate an XGBoost baseline on the earnings-event dataset.
 
-This script mirrors train_logreg.py, but replaces Logistic Regression with an XGBoost binary classifier.
-
 Pipeline:
 1. Load the event-level earnings dataset
-2. Select numerical features by prefix ("sent_", "f_")
-3. Perform time-based train / validation / test splits
+2. Sort by time
+3. Select numerical features by prefix ("sent_", "f_")
 4. Impute missing values (median); XGBoost does not require standardization
 5. Train an XGBoost model (binary:logistic)
 6. Evaluate performance on train / val / test splits
@@ -19,7 +17,6 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from xgboost import XGBClassifier
@@ -36,6 +33,7 @@ from train_utils import (
     time_val_split,
 )
 
+# -------------------------- paths / split --------------------------
 
 DATA = Path("data/trainable/event_table_500.parquet")
 OUT = Path("networks/xgb_earnings_model.joblib")
@@ -43,9 +41,10 @@ OUT = Path("networks/xgb_earnings_model.joblib")
 SPLIT_DATE = "2025-05-01"
 VAL_TAIL_FRAC = 0.15
 
+# -------------------------- model hyperparams --------------------------
+
 RANDOM_STATE = 0
 
-# Sensible baseline defaults (tune later)
 N_ESTIMATORS = 600
 MAX_DEPTH = 4
 LEARNING_RATE = 0.05
@@ -72,35 +71,36 @@ class XGBConfig:
     scale_pos_weight: float = 1.0
     random_state: int = 0
     n_jobs: int = -1
+    tree_method: str = "hist"
+    eval_metric: str = "logloss"
 
 
-def build_xgb_pipeline(feature_cols: list[str], cfg: XGBConfig) -> Pipeline:
-    """Build an XGBoost classification pipeline with preprocessing."""
-    pre = ColumnTransformer(
-        transformers=[
-            ("num", Pipeline(steps=[("impute", SimpleImputer(strategy="median"))]), feature_cols)
-        ],
-        remainder="drop",
-    )
+def build_xgb_pipeline(cfg: XGBConfig) -> Pipeline:
+    """
+    Build an XGBoost pipeline:
+      - median imputation (keeps everything numeric)
+      - XGBClassifier (binary:logistic)
+    """
+    pre = SimpleImputer(strategy="median")
 
     clf = XGBClassifier(
         objective="binary:logistic",
-        n_estimators=cfg.n_estimators,
-        max_depth=cfg.max_depth,
-        learning_rate=cfg.learning_rate,
-        subsample=cfg.subsample,
-        colsample_bytree=cfg.colsample_bytree,
-        reg_lambda=cfg.reg_lambda,
-        min_child_weight=cfg.min_child_weight,
-        gamma=cfg.gamma,
-        scale_pos_weight=cfg.scale_pos_weight,
-        random_state=cfg.random_state,
-        n_jobs=cfg.n_jobs,
-        eval_metric="logloss",
-        tree_method="hist",
+        n_estimators=int(cfg.n_estimators),
+        max_depth=int(cfg.max_depth),
+        learning_rate=float(cfg.learning_rate),
+        subsample=float(cfg.subsample),
+        colsample_bytree=float(cfg.colsample_bytree),
+        reg_lambda=float(cfg.reg_lambda),
+        min_child_weight=float(cfg.min_child_weight),
+        gamma=float(cfg.gamma),
+        scale_pos_weight=float(cfg.scale_pos_weight),
+        random_state=int(cfg.random_state),
+        n_jobs=int(cfg.n_jobs),
+        eval_metric=str(cfg.eval_metric),
+        tree_method=str(cfg.tree_method),
     )
 
-    return Pipeline(steps=[("pre", pre), ("clf", clf)])
+    return Pipeline(steps=[("impute", pre), ("clf", clf)])
 
 
 def run_split(name: str, pipe: Pipeline, part: pd.DataFrame, feature_cols: list[str], label_col: str) -> None:
@@ -116,11 +116,11 @@ def run_split(name: str, pipe: Pipeline, part: pd.DataFrame, feature_cols: list[
 
 
 def compute_scale_pos_weight(y_train: np.ndarray) -> float:
-    """Compute scale_pos_weight = (#neg / #pos) for imbalanced binary classification."""
-    y = y_train.astype(int)
+    """Compute scale_pos_weight = (#neg / #pos)."""
+    y = np.asarray(y_train).astype(int)
     pos = int((y == 1).sum())
     neg = int((y == 0).sum())
-    if pos == 0:
+    if pos <= 0:
         return 1.0
     return float(neg / pos)
 
@@ -135,7 +135,6 @@ def main() -> None:
         raise KeyError(f"Missing date column: {split_cfg.date_col}")
 
     df = ensure_sorted_datetime(df, split_cfg.date_col)
-
     feature_cols = pick_feature_columns(df, split_cfg.feature_prefixes)
     if not feature_cols:
         raise ValueError(f"No feature columns found with prefixes: {split_cfg.feature_prefixes}")
@@ -164,9 +163,11 @@ def main() -> None:
         scale_pos_weight=spw,
         random_state=RANDOM_STATE,
         n_jobs=-1,
+        tree_method="hist",
+        eval_metric="logloss",
     )
 
-    pipe = build_xgb_pipeline(feature_cols, xgb_cfg)
+    pipe = build_xgb_pipeline(xgb_cfg)
     pipe.fit(x_tr, y_tr)
 
     run_split("train", pipe, train, feature_cols, split_cfg.label_col)
@@ -174,7 +175,13 @@ def main() -> None:
     run_split("test", pipe, test, feature_cols, split_cfg.label_col)
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    bundle = {"pipeline": pipe, "feature_cols": feature_cols, "split_cfg": split_cfg, "xgb_cfg": xgb_cfg}
+    bundle = {
+        "pipeline": pipe,
+        "feature_cols": feature_cols,
+        "split_cfg": split_cfg,
+        "xgb_cfg": xgb_cfg,
+        "data_path": str(DATA),
+    }
     joblib.dump(bundle, OUT)
     print(f"\nSaved model bundle to: {OUT}")
 
