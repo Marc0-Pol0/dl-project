@@ -14,7 +14,7 @@ DATA_DIR = './data/trainable/'
 EA_FILENAME = 'earning_dates_500.pkl'
 FEATURE_FILENAME = 'final_data_500.pkl'
 SEQUENCE_LENGTH = 30  # Days preceding the EA
-PRICE_CHANGE_THRESHOLD = 0.03  # 3% threshold for UP/DOWN label
+PRICE_CHANGE_THRESHOLD = 0.015  # 1.5% threshold for UP/DOWN label
 
 # --- 1. Label Calculation Helper Function ---
 
@@ -96,6 +96,10 @@ class StockDataset(Dataset):
         
         # Convert list of pointers to a DataFrame for easier slicing/tracking
         self.samples_df = pd.DataFrame(self.samples, columns=['ticker', 'start_date', 'ea_date', 'label'])
+
+        if self.is_train:
+            self.samples_df = oversample_minority_classes(self.samples_df, target_ratio=1.0)
+            self.samples = list(self.samples_df.itertuples(index=False, name=None))
         
         # --- Scaling: Fit scaler only on training data (CRITICAL step to avoid leakage) ---
         if self.is_train and self.scaler is None:

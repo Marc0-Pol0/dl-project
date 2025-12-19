@@ -65,8 +65,8 @@ DROPOUT = 0.2
 LR = 1e-3
 WEIGHT_DECAY = 1e-4
 BATCH_SIZE = 64
-MAX_EPOCHS = 100
-PATIENCE = 10
+MAX_EPOCHS = 1000
+PATIENCE = 100
 USE_POS_WEIGHT = True
 
 
@@ -77,8 +77,8 @@ class MLPConfig:
     lr: float = 1e-3
     weight_decay: float = 1e-4
     batch_size: int = 64
-    max_epochs: int = 100
-    patience: int = 10
+    max_epochs: int = 1000
+    patience: int = 100
     use_pos_weight: bool = True
     random_state: int = 0
     device: str = "cpu"

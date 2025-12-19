@@ -19,7 +19,7 @@ Sequence construction:
 - If history is shorter than SEQ_LEN, left-pad with NaNs (then impute).
 - Per-time-step features:
     * base features from event table f_* columns (strip "f_")
-    * daily sentiment columns: positive/negative/neutral
+    * daily sentiment columns: normalized ratios and net sentiment
     * derived daily sentiment feature: pos_minus_neg = positive - negative
 
 Preprocessing (fit on train only):
@@ -87,26 +87,26 @@ else:
 # ----------------------------- model/training defaults -----------------------------
 
 RANDOM_STATE = 0
-SEQ_LEN = 30
+SEQ_LEN = 10
 
-# Reduced capacity for better generalization
 HIDDEN_SIZE = 64
 NUM_LAYERS = 1
-DROPOUT = 0.3
+DROPOUT = 0.5
 
-LR = 1e-3
+LR = 5e-3
 WEIGHT_DECAY = 1e-4
 BATCH_SIZE = 64
-MAX_EPOCHS = 100
-PATIENCE = 10
+MAX_EPOCHS = 1000
+PATIENCE = 100
 
 # No pos_weight by default (calibration + mild imbalance)
 USE_POS_WEIGHT = False
 
-# ----------------------------- sentiment features -----------------------------
+# ----------------------------- sentiment engineering -----------------------------
 
-SENTIMENT_COLS = ("positive", "negative", "neutral")
-ADD_DERIVED_POS_MINUS_NEG = True
+RAW_SENTIMENT_COLS = ("positive", "negative", "neutral")
+SENT_FEATURES = ("pos_frac", "neg_frac", "neu_frac", "sent_net")
+SENT_EPS = 1e-6
 
 # Threshold selection grid (on validation)
 THRESH_GRID = np.linspace(0.05, 0.95, 91)
@@ -114,15 +114,15 @@ THRESH_GRID = np.linspace(0.05, 0.95, 91)
 
 @dataclass(frozen=True)
 class LSTMConfig:
-    seq_len: int = 30
+    seq_len: int = 10
     hidden_size: int = 64
     num_layers: int = 1
     dropout: float = 0.3
     lr: float = 1e-3
     weight_decay: float = 1e-4
     batch_size: int = 64
-    max_epochs: int = 100
-    patience: int = 10
+    max_epochs: int = 1000
+    patience: int = 100
     use_pos_weight: bool = False
     random_state: int = 0
     device: str = "cpu"
@@ -163,51 +163,65 @@ def base_feature_names_from_event_table(event_df: pd.DataFrame) -> list[str]:
 
 def build_feature_list(event_df: pd.DataFrame) -> list[str]:
     """
-    Build the per-day feature list for sequences:
-      - base (from f_* columns)
-      - sentiment cols
-      - optional derived pos_minus_neg
+    Per-day feature list for sequences:
+      - base features from f_* (strip 'f_')
+      - engineered sentiment features (ratios + net)
     """
     base_cols = base_feature_names_from_event_table(event_df)
     cols = set(base_cols)
-    cols.update(SENTIMENT_COLS)
-    if ADD_DERIVED_POS_MINUS_NEG:
-        cols.add("pos_minus_neg")
-    out = sorted(cols)
+    cols.update(SENT_FEATURES)
+    return sorted(cols)
+
+
+def _add_engineered_sentiment(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ensure engineered sentiment columns exist: pos_frac, neg_frac, neu_frac, sent_net.
+    If raw sentiment cols are missing, engineered cols will be NaN.
+    """
+    if all(c in df.columns for c in RAW_SENTIMENT_COLS):
+        pos = df["positive"].astype(float)
+        neg = df["negative"].astype(float)
+        neu = df["neutral"].astype(float)
+        tot = pos + neg + neu
+        denom = tot + float(SENT_EPS)
+
+        out = df.copy()
+        out["pos_frac"] = pos / denom
+        out["neg_frac"] = neg / denom
+        out["neu_frac"] = neu / denom
+        out["sent_net"] = (pos - neg) / denom
+        return out
+
+    # If missing, create columns so reindex works (will be imputed later if possible)
+    out = df.copy()
+    for c in SENT_FEATURES:
+        if c not in out.columns:
+            out[c] = np.nan
     return out
 
 
 def build_sequence(
-    per_ticker_df: pd.DataFrame, feature_day: pd.Timestamp, base_cols: list[str], seq_len: int
+    per_ticker_df: pd.DataFrame, feature_day: pd.Timestamp, cols: list[str], seq_len: int
 ) -> np.ndarray:
     """
     Build a [T, F] sequence ending at feature_day (inclusive).
     If feature_day is not present, use nearest previous trading day.
     Left-pad with NaNs to reach seq_len.
-
-    Adds derived sentiment column pos_minus_neg if requested and possible.
     """
-    df = per_ticker_df
-
-    # Derived daily sentiment feature
-    if ADD_DERIVED_POS_MINUS_NEG and ("pos_minus_neg" in base_cols):
-        if "pos_minus_neg" not in df.columns:
-            if ("positive" in df.columns) and ("negative" in df.columns):
-                df = df.copy()
-                df["pos_minus_neg"] = df["positive"].astype(float) - df["negative"].astype(float)
+    df = _add_engineered_sentiment(per_ticker_df)
 
     idx = df.index
     if feature_day not in idx:
         pos = int(idx.searchsorted(feature_day, side="right")) - 1
         if pos < 0:
-            return np.full((seq_len, len(base_cols)), np.nan, dtype=np.float32)
+            return np.full((seq_len, len(cols)), np.nan, dtype=np.float32)
         feature_day = idx[pos]
 
     end_pos = int(idx.get_loc(feature_day))
     start_pos = max(0, end_pos - (seq_len - 1))
     window = df.iloc[start_pos : end_pos + 1]
 
-    x = window.reindex(columns=base_cols).to_numpy(dtype=np.float32)
+    x = window.reindex(columns=cols).to_numpy(dtype=np.float32)
     if x.shape[0] < seq_len:
         pad = np.full((seq_len - x.shape[0], x.shape[1]), np.nan, dtype=np.float32)
         x = np.vstack([pad, x])
@@ -355,8 +369,8 @@ def main() -> None:
     event_df["feature_day"] = pd.to_datetime(event_df["feature_day"], errors="coerce")
     event_df = event_df.dropna(subset=["feature_day"])
 
-    base_cols = build_feature_list(event_df)
-    if not base_cols:
+    seq_cols = build_feature_list(event_df)
+    if not seq_cols:
         raise ValueError("No per-day base features found (expected f_* columns).")
 
     final_data: dict[str, pd.DataFrame] = load_pickle(FINAL_DATA)
@@ -366,7 +380,7 @@ def main() -> None:
     train, val = time_val_split(train_all, split_cfg.date_col, split_cfg.val_tail_frac)
 
     print_split_sizes(event_df, train, val, test)
-    print("seq_len:", SEQ_LEN, "| n_features:", len(base_cols))
+    print("seq_len:", SEQ_LEN, "| n_features:", len(seq_cols))
     print("device:", DEVICE)
 
     def build_xy(part: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
@@ -378,19 +392,19 @@ def main() -> None:
                 continue
             df_t = final_data[t]
             fd = pd.Timestamp(getattr(row, "feature_day"))
-            x = build_sequence(df_t, fd, base_cols, SEQ_LEN)
+            x = build_sequence(df_t, fd, seq_cols, SEQ_LEN)
             xs.append(x)
             ys.append(int(getattr(row, split_cfg.label_col)))
         if not xs:
             return (
-                np.zeros((0, SEQ_LEN, len(base_cols)), dtype=np.float32),
+                np.zeros((0, SEQ_LEN, len(seq_cols)), dtype=np.float32),
                 np.zeros((0,), dtype=np.int64),
             )
         return np.stack(xs, axis=0), np.asarray(ys, dtype=np.int64)
 
     x_tr_raw, y_tr = build_xy(train)
     x_va_raw, y_va = build_xy(val) if len(val) else (
-        np.zeros((0, SEQ_LEN, len(base_cols)), dtype=np.float32),
+        np.zeros((0, SEQ_LEN, len(seq_cols)), dtype=np.float32),
         np.zeros((0,), dtype=np.int64),
     )
     x_te_raw, y_te = build_xy(test)
@@ -419,7 +433,7 @@ def main() -> None:
     )
 
     model = LSTMClassifier(
-        in_dim=len(base_cols),
+        in_dim=len(seq_cols),
         hidden_size=cfg.hidden_size,
         num_layers=cfg.num_layers,
         dropout=cfg.dropout,
@@ -427,7 +441,6 @@ def main() -> None:
 
     opt = torch.optim.AdamW(model.parameters(), lr=float(cfg.lr), weight_decay=float(cfg.weight_decay))
 
-    # Loss: default no pos_weight; if enabled, compute weight on train
     if cfg.use_pos_weight:
         pos = int((y_tr == 1).sum())
         neg = int((y_tr == 0).sum())
@@ -487,14 +500,15 @@ def main() -> None:
         "state_dict": model.state_dict(),
         "imputer": imp,
         "scaler": scaler,
-        "base_feature_cols": base_cols,
+        "seq_cols": seq_cols,
         "split_cfg": split_cfg,
         "lstm_cfg": cfg,
         "threshold": float(chosen_thresh),
         "data_path_event_table": str(EVENT_TABLE),
         "data_path_final_data": str(FINAL_DATA),
-        "sentiment_cols": SENTIMENT_COLS,
-        "add_pos_minus_neg": bool(ADD_DERIVED_POS_MINUS_NEG),
+        "raw_sentiment_cols": RAW_SENTIMENT_COLS,
+        "engineered_sentiment_cols": SENT_FEATURES,
+        "seq_len": int(SEQ_LEN),
     }
     joblib.dump(bundle, OUT)
     print(f"\nSaved model bundle to: {OUT}")

@@ -165,9 +165,9 @@ def run_training():
     
 
     # CrossEntropyLoss is standard for multi-class classification (includes Softmax internally)
-    weights_tensor = torch.tensor([2.5, 3, 1], dtype=torch.float32)
-    weights_tensor = weights_tensor.to(device)
-    criterion = nn.CrossEntropyLoss(weight=weights_tensor)
+    # weights_tensor = torch.tensor([2.5, 3, 1], dtype=torch.float32)
+    # weights_tensor = weights_tensor.to(device)
+    criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=Config.LEARNING_RATE)
 
     # --- 3. Training Loop ---
@@ -231,6 +231,10 @@ def run_testing(model: nn.Module, dataloader: DataLoader, criterion: nn.Module, 
             outputs = model(X_batch)
             loss = criterion(outputs, Y_batch)
             total_loss += loss.item()
+
+            probs = torch.softmax(outputs, dim=1)
+            mean_probs = probs.mean(dim=0).cpu().numpy()
+            print("mean predicted probs [UP, DOWN, NEU]:", mean_probs)
             
             # Calculate metrics
             _, predicted = torch.max(outputs.data, 1) 
