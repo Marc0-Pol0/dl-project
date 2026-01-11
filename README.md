@@ -1,4 +1,4 @@
-# DL Project: Predicting Earning Announcements Day Direction
+# DL Project: Predicting Earnings Announcement Day Direction
 
 Predicting stock price reactions to earnings announcements by combining firm fundamentals, market data and FinBERT-based news sentiment using deep learning models.
 
