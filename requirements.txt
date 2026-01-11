@@ -12,3 +12,4 @@ xgboost
 yfinance
 beautifulsoup4
 requests
+seaborn
