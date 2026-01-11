@@ -1,9 +1,8 @@
-# Create sentiment given financial text
 import torch
 from scipy.special import softmax
 from typing import Dict, Any
 
-
+# Function to get sentiment probabilities using FinBERT model
 def get_finbert_probabilities(sentence, model, tokenizer, device):
 
     LABELS = model.config.id2label
@@ -12,12 +11,12 @@ def get_finbert_probabilities(sentence, model, tokenizer, device):
     inputs = tokenizer(sentence, return_tensors="pt", padding=True, truncation=True, max_length=512)
     inputs = {k: v.to(device) for k, v in inputs.items()}
 
-    # Forward pass
+    # Forward pass of the model
     with torch.no_grad():
         outputs = model(**inputs)
         logits = outputs.logits
 
-    # Convert logits to probs. using softmax
+    # Logits to probabilities
     probabilities = softmax(logits.numpy().squeeze())
 
     # Build scores dictionary

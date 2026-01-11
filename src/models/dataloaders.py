@@ -6,52 +6,32 @@ import os
 import datetime as dt
 from sklearn.preprocessing import StandardScaler
 from typing import Dict, List, Tuple
-from utils import oversample_minority_classes
-from collections import Counter
 
-# --- Configuration ---
+# Configurations
 DATA_DIR = './data/trainable/' 
 EA_FILENAME = 'earning_dates_500.pkl'
 FEATURE_FILENAME = 'final_data_500.pkl'
 SEQUENCE_LENGTH = 30  # Days preceding the EA
 PRICE_CHANGE_THRESHOLD = 0.015  # 1.5% threshold for UP/DOWN label
 
-# --- 1. Label Calculation Helper Function ---
-
+# Calculate label from stock price change
 def calculate_label(ticker: str, ea_date: dt.datetime, consolidated_data: Dict[str, pd.DataFrame]) -> int:
-    """
-    Calculates the classification label (Up/Down/Neutral) based on the stock price 
-    change on the earnings announcement day.
-    
-    Labels: 0 = Up, 1 = Down, 2 = Neutral
-    """
-    
     df = consolidated_data[ticker]
     
-    # 1. Get the stock price the day BEFORE the EA (Sequence End)
-    # The last day of the 30-day sequence is ea_date - 1 day
-    ea_date = pd.to_datetime(ea_date)
-    pre_ea_date = ea_date - dt.timedelta(days=2)
+    # Get stock prices the day after (EA influences the market on the day after) and two days before the EA date
+    ea_date = pd.to_datetime(ea_date) + dt.timedelta(days=1)
+    pre_ea_date = ea_date - dt.timedelta(days=2)  # Two days before EA to reduce noise
+      
+    # Get the 'adj_price' for the pre-EA date
+    price_pre_ea = df.loc[pre_ea_date]['adj_price']
     
-    # Safely get the 'adj_price' for the pre-EA date
-    try:
-        price_pre_ea = df.loc[pre_ea_date]['adj_price']
-    except KeyError:
-        # If the pre-EA date is missing (shouldn't happen with FFILL, but safety first)
-        return -1 # Use -1 to denote an unusable sample
-    
-
-    # 2. Get the stock price the day OF the EA
-    try:
-        price_ea = df.loc[ea_date]['adj_price']
-    except KeyError:
-        # If the EA date is missing, the label cannot be calculated
-        return -1 
+    # Get the stock price the day of the EA
+    price_ea = df.loc[ea_date]['adj_price']
         
-    # 3. Calculate Return
+    # Calculate Return
     daily_return = (price_ea - price_pre_ea) / price_pre_ea
     
-    # 4. Assign Label
+    # Assign Label given the threshold
     if daily_return >= PRICE_CHANGE_THRESHOLD:
         return 0  # Up (Positive)
     elif daily_return <= -PRICE_CHANGE_THRESHOLD:
@@ -59,9 +39,8 @@ def calculate_label(ticker: str, ea_date: dt.datetime, consolidated_data: Dict[s
     else:
         return 2  # Neutral
 
-# --- 2. PyTorch Custom Dataset Class ---
+# PyTorch custom dataset class (input, label)
 class StockDataset(Dataset):
-    """Custom Dataset for extracting 30-day sequences and labels for LSTM training."""
 
     def __init__(self, consolidated_data: Dict[str, pd.DataFrame], ea_dates: Dict[str, List[dt.datetime]], scaler=None, is_train=True):
         
@@ -71,17 +50,19 @@ class StockDataset(Dataset):
         self.is_train = is_train
         self.samples = []  # List of (ticker, start_date, ea_date, label) tuples
 
-        # --- Indexing: Create all 30-day windows based on EA dates ---
+        # Indexing: Create all 30-day sequences leading up to each EA date
         for ticker, ea_df in ea_dates.items():
             if ticker not in consolidated_data:
                 continue
             
+            # Extract the list of EA dates for this ticker
             dates_list = ea_df['Earnings Date'].tolist()
         
+            # For each EA date, determine if a valid 30-day sequence exists
             for ea_date in dates_list:
                 ea_date = pd.to_datetime(ea_date, errors='coerce').tz_localize(None).normalize().date()
                 
-                
+                # Go back SEQUENCE_LENGTH days to get the start date
                 start_date = ea_date - dt.timedelta(days=SEQUENCE_LENGTH)
 
                 # Check for completeness: Ensure 30 consecutive days of data exist
@@ -101,19 +82,20 @@ class StockDataset(Dataset):
             self.samples_df = oversample_minority_classes(self.samples_df, target_ratio=1.0)
             self.samples = list(self.samples_df.itertuples(index=False, name=None))
         
-        # --- Scaling: Fit scaler only on training data (CRITICAL step to avoid leakage) ---
+        # Scaling: Fit scaler only on training data (critical to avoid leakage)
         if self.is_train and self.scaler is None:
             self.scaler = StandardScaler()
             
-            # 1. Create a matrix of ALL feature data from the training windows
+            # Create a matrix of all feature data from the training windows
             all_features = []
             for _, row in self.samples_df.iterrows():
                 df_window = consolidated_data[row['ticker']].loc[row['start_date']:row['ea_date'] - dt.timedelta(days=1)]
                 all_features.append(df_window.values)
                 
+            # Training data matrix
             X_train_matrix = np.concatenate(all_features, axis=0)
             
-            # 2. Fit the scaler
+            # Fit scaler (improves stability)
             self.scaler.fit(X_train_matrix)
             print(f"Scaler fitted on {X_train_matrix.shape[0]} daily training observations.")
         
@@ -124,31 +106,28 @@ class StockDataset(Dataset):
         # Retrieve the pointer for this index
         ticker, start_date, ea_date, label = self.samples[idx]
         
-        # 1. Extract 30-Day Sequence (X)
+        # Extract 30-Day Sequence
         end_date = ea_date - dt.timedelta(days=1)
         df_window = self.consolidated_data[ticker].loc[start_date:end_date]
         
         # Convert to NumPy array
-        X = df_window.values # Drop current price before scaling/input
+        X = df_window.values
         
-        # 2. Scale the features
+        # Scale the features
         if self.scaler:
-            # Scale the 30-day window using the fitted scaler
             X_scaled = self.scaler.transform(X)
         else:
             X_scaled = X
-            
-        # 3. Convert to PyTorch tensors
+        
+        # Convert to Tensors
         X_tensor = torch.tensor(X_scaled, dtype=torch.float32)
         Y_tensor = torch.tensor(label, dtype=torch.long)
 
         # X_tensor shape will be (30, 21) -> Sequence Length, Feature Dimension (22 features - 1 adj_price)
         return X_tensor, Y_tensor
 
-# --- 3. DataLoader Creator ---
-
+# Dataloader creation function
 def create_dataloader(batch_size: int, is_train: bool, scaler: StandardScaler = None, **kwargs) -> Tuple[DataLoader, StandardScaler]:
-    """Loads data, initializes Dataset, and returns DataLoader."""
     
     # Load the processed data files
     print("Loading feature and EA date files...")
@@ -163,24 +142,21 @@ def create_dataloader(batch_size: int, is_train: bool, scaler: StandardScaler = 
         all_ea_dates.extend(ea_df['Earnings Date'].dropna().tolist())
         ea_dates[ticker] = ea_df
     
-    if not all_ea_dates:
-         raise ValueError("No valid earnings dates found for splitting.")
-
-    # --- DETERMINE GLOBAL CUTOFF DATE (80% of total time span) ---
+    # Get global max and min EA dates in the dataset
     max_date = max(all_ea_dates)
     min_date = max_date - dt.timedelta(days=365)
     
-    # Calculate the date corresponding to 80% of the total duration
+    # Calculate the date corresponding to 80% of the total duration (0.87 from experiments)
     GLOBAL_CUTOFF_DATE = min_date + (max_date - min_date) * 0.87
     
-    # --- FILTER THE EA DATES BASED ON THE GLOBAL CUTOFF ---
+    # Filter dates based on train/test split
     filtered_ea_dates = {}
     for ticker, ea_df in ea_dates.items():
         if is_train:
-            # Training: Use events ON or BEFORE the cutoff date
+            # Training: Use events on or before the cutoff date
             filtered_df = ea_df[ea_df['Earnings Date'] <= GLOBAL_CUTOFF_DATE].copy()
         else:
-            # Testing: Use events STRICTLY AFTER the cutoff date
+            # Testing: Use events strictly the cutoff date, prevent leakage
             filtered_df = ea_df[ea_df['Earnings Date'] > GLOBAL_CUTOFF_DATE].copy()
 
         if not filtered_df.empty:
@@ -204,6 +180,3 @@ def create_dataloader(batch_size: int, is_train: bool, scaler: StandardScaler = 
     )
     
     return dataloader, dataset.scaler
-
-
-    
