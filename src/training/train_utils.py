@@ -1,13 +1,3 @@
-"""
-Shared utilities for training and evaluating earnings-event prediction models.
-
-Reads the event-level dataset (Parquet / CSV)
-Selects feature columns by prefix (e.g. "sent_", "f_")
-Enforces time ordering and time-based train / validation / test splits
-Extracts (X, y) matrices from event tables
-Computes and prints standard binary-classification metrics
-"""
-
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -26,19 +16,22 @@ from sklearn.metrics import (
 
 @dataclass(frozen=True)
 class SplitConfig:
-    label_col: str = "label_up"
+    # For 3-class from the new builder, use "label".
+    # For old behavior, use "label_up".
+    label_col: str = "label"
     date_col: str = "earnings_day"
     feature_prefixes: tuple[str, ...] = ("sent_", "f_")
-    # Train/Test split: < split_date is train; >= split_date is test
     split_date: str = "2025-05-01"
-    # Validation is the last tail fraction of unique dates inside the train period
     val_tail_frac: float = 0.15
+
+    # For multiclass string labels (only used when label_col == "label" or dtype is non-numeric)
+    # Must match the builder's label names.
+    class_order: tuple[str, ...] = ("down", "neutral", "up")
 
 
 # -------------------------- IO --------------------------
 
 def read_table(path: Path) -> pd.DataFrame:
-    """Read a table from a Parquet or CSV file."""
     suf = path.suffix.lower()
     if suf == ".parquet":
         return pd.read_parquet(path)
@@ -50,7 +43,6 @@ def read_table(path: Path) -> pd.DataFrame:
 # -------------------------- schema / hygiene --------------------------
 
 def ensure_sorted_datetime(df: pd.DataFrame, date_col: str) -> pd.DataFrame:
-    """Ensure date_col is datetime64 and sort ascending by date_col."""
     d = df.copy()
     d[date_col] = pd.to_datetime(d[date_col], errors="coerce")
     d = d.dropna(subset=[date_col])
@@ -60,7 +52,6 @@ def ensure_sorted_datetime(df: pd.DataFrame, date_col: str) -> pd.DataFrame:
 # -------------------------- feature selection --------------------------
 
 def pick_feature_columns(df: pd.DataFrame, prefixes: Iterable[str]) -> list[str]:
-    """Pick feature columns based on prefixes; returns a sorted, stable list."""
     prefixes = tuple(prefixes)
     feats = [c for c in df.columns if any(c.startswith(p) for p in prefixes)]
     feats.sort()
@@ -70,11 +61,6 @@ def pick_feature_columns(df: pd.DataFrame, prefixes: Iterable[str]) -> list[str]
 # -------------------------- time splits --------------------------
 
 def time_split(df: pd.DataFrame, date_col: str, split_date: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Split df into train and test based on date_col and split_date.
-      Train: date_col < split_date
-      Test:  date_col >= split_date
-    """
     d = ensure_sorted_datetime(df, date_col)
     split_ts = pd.Timestamp(split_date)
     train = d[d[date_col] < split_ts].copy()
@@ -83,7 +69,6 @@ def time_split(df: pd.DataFrame, date_col: str, split_date: str) -> tuple[pd.Dat
 
 
 def time_val_split(train: pd.DataFrame, date_col: str, tail_frac: float) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Split train into (train, val) using the last tail_frac fraction of unique dates as validation."""
     if len(train) == 0 or tail_frac <= 0.0:
         return train, train.iloc[0:0].copy()
 
@@ -93,9 +78,8 @@ def time_val_split(train: pd.DataFrame, date_col: str, tail_frac: float) -> tupl
     if len(dates) <= 1:
         return d, d.iloc[0:0].copy()
 
-    # Number of unique dates reserved for validation
     n_val_dates = max(1, int(round(len(dates) * float(tail_frac))))
-    n_val_dates = min(n_val_dates, len(dates) - 1)  # keep at least 1 date for training
+    n_val_dates = min(n_val_dates, len(dates) - 1)
     cutoff = dates[-n_val_dates - 1]
 
     tr = d[pd.to_datetime(d[date_col]) <= cutoff].copy()
@@ -104,14 +88,6 @@ def time_val_split(train: pd.DataFrame, date_col: str, tail_frac: float) -> tupl
 
 
 def make_splits(df: pd.DataFrame, cfg: SplitConfig) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, list[str]]:
-    """
-    Convenience wrapper:
-      - sort by time
-      - pick features by prefix
-      - split into train/val/test by time
-
-    Returns (train, val, test, feature_cols).
-    """
     d = ensure_sorted_datetime(df, cfg.date_col)
 
     feature_cols = pick_feature_columns(d, cfg.feature_prefixes)
@@ -124,7 +100,6 @@ def make_splits(df: pd.DataFrame, cfg: SplitConfig) -> tuple[pd.DataFrame, pd.Da
 
 
 def print_split_sizes(df: pd.DataFrame, train: pd.DataFrame, val: pd.DataFrame, test: pd.DataFrame) -> None:
-    """Print sizes of full/train/val/test plus date ranges."""
     def _rng(x: pd.DataFrame, col: str) -> str:
         if len(x) == 0 or col not in x.columns:
             return "∅"
@@ -142,26 +117,56 @@ def print_split_sizes(df: pd.DataFrame, train: pd.DataFrame, val: pd.DataFrame, 
 
 # -------------------------- X/y extraction --------------------------
 
-def get_xy(df: pd.DataFrame, feature_cols: Sequence[str], label_col: str) -> tuple[np.ndarray, np.ndarray]:
+def encode_labels(
+    y: pd.Series,
+    class_order: Sequence[str] | None = None,
+) -> tuple[np.ndarray, list[str]]:
     """
-    Extract feature matrix X and label vector y.
-    Returns numpy arrays for easy use with sklearn / torch.
+    Encode labels into int indices [0..K-1] and return (y_int, class_names).
+    - If y is numeric/bool already, keeps unique sorted values as class names.
+    - If y is strings/categorical, uses class_order if provided; otherwise uses sorted uniques.
     """
+    if pd.api.types.is_bool_dtype(y) or pd.api.types.is_integer_dtype(y) or pd.api.types.is_float_dtype(y):
+        y_num = pd.to_numeric(y, errors="coerce")
+        if y_num.isna().any():
+            raise ValueError("Numeric label column contains NaNs after coercion.")
+        uniq = np.array(sorted(pd.unique(y_num.astype(int))))
+        mapping = {int(v): i for i, v in enumerate(uniq)}
+        y_int = y_num.astype(int).map(mapping).to_numpy()
+        class_names = [str(int(v)) for v in uniq]
+        return y_int.astype(int), class_names
+
+    # string/categorical path
+    y_str = y.astype(str)
+    if class_order is None:
+        classes = sorted(pd.unique(y_str))
+    else:
+        classes = list(class_order)
+
+    cat = pd.Categorical(y_str, categories=classes, ordered=True)
+    if (cat.codes < 0).any():
+        bad = sorted(set(y_str[cat.codes < 0]))
+        raise ValueError(f"Found labels not in class_order: {bad}")
+    return cat.codes.astype(int), list(classes)
+
+
+def get_xy(
+    df: pd.DataFrame,
+    feature_cols: Sequence[str],
+    label_col: str,
+    class_order: Sequence[str] | None = None,
+) -> tuple[np.ndarray, np.ndarray, list[str]]:
     if label_col not in df.columns:
         raise KeyError(f"Missing label column: {label_col}")
+
     x = df.loc[:, list(feature_cols)].to_numpy(dtype=np.float32, copy=True)
-    y = df[label_col].astype(int).to_numpy(copy=True)
-    return x, y
+    y_int, class_names = encode_labels(df[label_col], class_order=class_order)
+    return x, y_int, class_names
 
 
 # -------------------------- evaluation --------------------------
 
 def eval_binary(y_true: np.ndarray, y_prob: np.ndarray, thresh: float = 0.5, eps: float = 1e-7) -> dict[str, float]:
-    """
-    Evaluate binary classification predictions and print metrics.
-
-    y_prob is P(y=1). Clipped to [eps, 1-eps] for numeric stability.
-    """
     y_true = np.asarray(y_true).astype(int)
     y_prob = np.asarray(y_prob).astype(float)
     y_prob = np.clip(y_prob, eps, 1.0 - eps)
@@ -184,3 +189,53 @@ def eval_binary(y_true: np.ndarray, y_prob: np.ndarray, thresh: float = 0.5, eps
     print("classification_report:\n", rep)
 
     return {"accuracy": acc, "auc": auc, "logloss": ll, "brier": bs}
+
+
+def eval_multiclass(
+    y_true: np.ndarray,
+    y_proba: np.ndarray,
+    class_names: Sequence[str] | None = None,
+    eps: float = 1e-7,
+) -> dict[str, float]:
+    """
+    Multiclass evaluation.
+    - y_proba: shape (n, K), rows sum ~ 1
+    Prints: accuracy, logloss, confusion matrix, classification report.
+    Also prints multiclass Brier score (mean over samples of sum_k (p_k - 1[y=k])^2).
+    """
+    y_true = np.asarray(y_true).astype(int)
+    y_proba = np.asarray(y_proba).astype(float)
+
+    if y_proba.ndim != 2:
+        raise ValueError(f"y_proba must be 2D (n,K), got shape {y_proba.shape}")
+    n, k = y_proba.shape
+    if n != len(y_true):
+        raise ValueError(f"y_true length {len(y_true)} != y_proba rows {n}")
+
+    y_proba = np.clip(y_proba, eps, 1.0 - eps)
+    y_proba = y_proba / y_proba.sum(axis=1, keepdims=True)
+
+    y_pred = y_proba.argmax(axis=1)
+
+    labels = list(range(k))
+    target_names = list(class_names) if class_names is not None else [str(i) for i in labels]
+
+    acc = float(accuracy_score(y_true, y_pred))
+    ll = float(log_loss(y_true, y_proba, labels=labels))
+
+    # Multiclass Brier: mean ||p - onehot||^2
+    onehot = np.eye(k, dtype=float)[y_true]
+    brier_mc = float(np.mean(np.sum((y_proba - onehot) ** 2, axis=1)))
+
+    cm = confusion_matrix(y_true, y_pred, labels=labels)
+    rep = classification_report(
+        y_true, y_pred, labels=labels, target_names=target_names, digits=4, zero_division=0
+    )
+
+    print(f"accuracy: {acc:.4f}")
+    print(f"logloss:  {ll:.4f}")
+    print(f"brier_mc: {brier_mc:.4f}")
+    print("confusion_matrix:\n", cm)
+    print("classification_report:\n", rep)
+
+    return {"accuracy": acc, "logloss": ll, "brier_mc": brier_mc}

@@ -11,7 +11,7 @@ Build an earnings-event table (features + label) from:
 Output:
   A single event-level DataFrame with one row per earnings event in the modeling window:
     - ticker, earnings_ts_ny, calendar_day_ny, earnings_day (mapped trading day), event_type (BMO/AMC), feature_day
-    - return, label_up (binary), abs_return
+    - return, label (down/neutral/up), label_neutral (binary), label_up (binary), abs_return
     - aggregated sentiment over a lookback window (last N trading days; mean/std/trend + pos-neg)
     - snapshot of selected per-day features from final_data at feature_day (prefixed "f_")
     - event_id (ticker + timestamp) for debugging
@@ -52,6 +52,9 @@ PRICE_COL = "adj_price"
 KEEP_UNKNOWN_TIMING = False
 NY_TZ = "America/New_York"
 
+# Neutral labeling config:
+NEUTRAL_RET_EPS = 0.01  # 1% band: |ret| <= eps => neutral
+
 
 # -------------------------- helpers --------------------------
 
@@ -62,7 +65,7 @@ def load_pickle(path: Path) -> Any:
 
 def ensure_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Ensure the DataFrame index is a sorted, timezone-naive DatetimeIndex, 
+    Ensure the DataFrame index is a sorted, timezone-naive DatetimeIndex,
     and restrict to (approx) trading days by dropping weekends.
     """
     if not isinstance(df.index, pd.DatetimeIndex):
@@ -120,7 +123,6 @@ def map_trading_day_or_prev(trading_index: pd.DatetimeIndex, day: pd.Timestamp) 
     pos = int(trading_index.searchsorted(day0, side="left"))
     if pos < len(trading_index) and trading_index[pos] == day0:
         return trading_index[pos]
-    # insertion point pos: previous is pos-1
     prev_pos = pos - 1
     if prev_pos < 0 or prev_pos >= len(trading_index):
         return None
@@ -130,7 +132,6 @@ def map_trading_day_or_prev(trading_index: pd.DatetimeIndex, day: pd.Timestamp) 
 def previous_trading_day(trading_index: pd.DatetimeIndex, day: pd.Timestamp) -> pd.Timestamp | None:
     """Return the previous trading day before 'day', or None if none exists."""
     pos = int(trading_index.searchsorted(day, side="left"))
-    # if exact match at pos, prev is pos-1; otherwise prev is pos-1 as well
     prev_pos = pos - 1
     if prev_pos < 0:
         return None
@@ -167,6 +168,23 @@ def event_id(ticker: str, ts_ny: pd.Timestamp) -> str:
     return f"{ticker}_{ts_ny.strftime('%Y%m%dT%H%M%S%z')}"
 
 
+def label_from_return(ret: float, eps: float) -> tuple[str, int, int]:
+    """
+    3-class label based on return:
+      - neutral if |ret| <= eps
+      - up if ret > eps
+      - down if ret < -eps
+    Returns: (label, label_neutral, label_up)
+    """
+    if not math.isfinite(ret):
+        return ("neutral", 1, 0)
+    if abs(ret) <= eps:
+        return ("neutral", 1, 0)
+    if ret > eps:
+        return ("up", 0, 1)
+    return ("down", 0, 0)
+
+
 # -------------------------- build config --------------------------
 
 @dataclass(frozen=True)
@@ -174,6 +192,10 @@ class BuildConfig:
     lookback_trading_days: int = 30
     price_col: str = "adj_price"
     sentiment_cols: tuple[str, str, str] = ("positive", "negative", "neutral")
+
+    # Neutral labeling
+    neutral_ret_eps: float = 0.0025
+
     # Snapshot inclusion/exclusion
     include_snapshot_cols: tuple[str, ...] | None = None  # if set, use only these (must exist)
     exclude_snapshot_cols: tuple[str, ...] = ("positive", "negative", "neutral")  # always excluded by default
@@ -225,11 +247,11 @@ def sentiment_aggregates_trading_days(
     return out
 
 
-def compute_event_return_and_label(
+def compute_event_return(
     df: pd.DataFrame, event_day: pd.Timestamp, event_type: str, cfg: BuildConfig
-) -> tuple[float, int, float, pd.Timestamp] | None:
+) -> tuple[float, float, pd.Timestamp] | None:
     """
-    Returns (ret, label_up, abs_ret, feature_day), or None if not computable.
+    Returns (ret, abs_ret, feature_day), or None if not computable.
 
     feature_day:
       - BMO: previous trading day (pre-announcement close)
@@ -251,7 +273,7 @@ def compute_event_return_and_label(
         if not (math.isfinite(p0) and math.isfinite(p1)) or p0 == 0.0:
             return None
         ret = p1 / p0 - 1.0
-        return (float(ret), int(ret > 0.0), float(abs(ret)), prev_day)
+        return (float(ret), float(abs(ret)), prev_day)
 
     if event_type == "AMC":
         nxt_day = next_trading_day(idx, event_day)
@@ -262,7 +284,7 @@ def compute_event_return_and_label(
         if not (math.isfinite(p0) and math.isfinite(p1)) or p0 == 0.0:
             return None
         ret = p1 / p0 - 1.0
-        return (float(ret), int(ret > 0.0), float(abs(ret)), event_day)
+        return (float(ret), float(abs(ret)), event_day)
 
     return None
 
@@ -319,7 +341,6 @@ def build_event_table(
             if "Earnings Date" not in e.columns:
                 raise KeyError(f"{t}: earnings df missing 'Earnings Date' column")
 
-            # Precompute timestamps, drop NaT
             earn_ts_ny_series = e["Earnings Date"].map(to_ny_timestamp).dropna()
             earn_ts_ny_series = earn_ts_ny_series.sort_values()
 
@@ -335,18 +356,15 @@ def build_event_table(
 
                 calendar_day = pd.Timestamp(ts_ny.date())  # tz-naive NY calendar day at midnight
 
-                # Cheap window filter on calendar day (still keep mapping strict below)
                 if calendar_day < start_day or calendar_day > end_day:
                     dropped_outside += 1
                     continue
 
-                # Map to announcement trading day using event_type-aware logic.
                 if event_type == "BMO":
                     event_day = map_trading_day_or_next(idx, calendar_day)
                 elif event_type == "AMC":
                     event_day = map_trading_day_or_prev(idx, calendar_day)
                 else:
-                    # If UNKNOWN is kept, here is where a policy should be implemented
                     dropped_mapping += 1
                     continue
 
@@ -354,13 +372,15 @@ def build_event_table(
                     dropped_mapping += 1
                     continue
 
-                ret_info = compute_event_return_and_label(df, event_day, event_type, cfg)
+                ret_info = compute_event_return(df, event_day, event_type, cfg)
                 if ret_info is None:
                     dropped_return += 1
                     continue
-                ret, label_up, abs_ret, feature_day = ret_info
+                ret, abs_ret, feature_day = ret_info
 
-                # Leakage: compute last included sentiment day in *trading days*
+                label, label_neutral, label_up = label_from_return(ret, cfg.neutral_ret_eps)
+
+                # Leakage: last included sentiment day in trading days
                 if event_type == "BMO":
                     t_minus_1 = previous_trading_day(idx, event_day)
                     if t_minus_1 is None:
@@ -391,14 +411,15 @@ def build_event_table(
                     "feature_day": feature_day,
                     "return": float(ret),
                     "abs_return": float(abs_ret),
-                    "label_up": int(label_up),
+                    "label": label,                       # {down, neutral, up}
+                    "label_neutral": int(label_neutral),  # binary
+                    "label_up": int(label_up),            # binary (for backward compat)
                 }
                 row.update(sent_feats)
                 row.update(snap)
                 rows.append(row)
 
         except Exception as ex:
-            # Fail closed per ticker: count and continue
             print(f"[WARN] ticker={t} failed with: {type(ex).__name__}: {ex}")
 
     out = pd.DataFrame(rows)
@@ -420,16 +441,15 @@ def build_event_table(
     out["feature_day"] = pd.to_datetime(out["feature_day"])
     out["calendar_day_ny"] = pd.to_datetime(out["calendar_day_ny"])
 
-    # Types: event_type categorical
+    # Types
     out["event_type"] = out["event_type"].astype("category")
+    out["label"] = out["label"].astype("category")
 
-    # Cast ML features:
-    # - float features to float32
-    # - sent_days_used to int32 (keep as integer)
+    # Cast ML features
     sent_days_col = "sent_days_used"
     float_feature_cols = [
-        c 
-        for c in out.columns 
+        c
+        for c in out.columns
         if c.startswith("f_") or (c.startswith("sent_") and c != sent_days_col)
     ]
     out[float_feature_cols] = out[float_feature_cols].astype(np.float32)
@@ -448,6 +468,7 @@ def main() -> None:
         lookback_trading_days=LOOKBACK_TRADING_DAYS,
         price_col=PRICE_COL,
         sentiment_cols=("positive", "negative", "neutral"),
+        neutral_ret_eps=NEUTRAL_RET_EPS,
         include_snapshot_cols=None,
         exclude_snapshot_cols=("positive", "negative", "neutral"),
         exclude_snapshot_prefixes=("sent_",),
@@ -464,7 +485,15 @@ def main() -> None:
     if len(table) > 0:
         print("Date range:", table["earnings_day"].min(), "→", table["earnings_day"].max())
         print("Event types:\n", table["event_type"].value_counts(dropna=False))
-        print("Label balance (up=1):\n", table["label_up"].value_counts(normalize=True).rename("share"))
+
+        # 3-class label repartition (counts + shares)
+        counts = table["label"].value_counts(dropna=False)
+        shares = (counts / counts.sum()).rename("share")
+        print(f"Label repartition (eps={cfg.neutral_ret_eps:.6f}):\n", counts)
+        print("Label shares:\n", shares)
+
+        # If you still want the old binary balance for reference:
+        print("Binary label_up balance:\n", table["label_up"].value_counts(normalize=True).rename("share"))
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     suffix = OUT.suffix.lower()
