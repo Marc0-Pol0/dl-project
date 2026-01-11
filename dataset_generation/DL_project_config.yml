@@ -1,0 +1,143 @@
+data:
+  fundamental:
+    div_yld:
+      field: ff_div_yld
+      frequencyDependency: 0
+    #earn_yld:
+      #field: ff_earn_yld
+      #frequencyDependency: 0
+    net_mgn:
+      field: ff_net_mgn
+      frequencyDependency: 1
+    gross_mgn:
+      field: ff_gross_mgn
+      frequencyDependency: 1
+    eps_basic:
+      field: ff_eps_basic
+      frequencyDependency: 1
+    eps_dil:
+      field: ff_eps_dil
+      frequencyDependency: 1
+    assets:
+      field: ff_assets
+      frequencyDependency: 0
+    shldrs_eq:
+      field: ff_shldrs_eq
+      frequencyDependency: 0
+    inven:
+      field: ff_inven
+      frequencyDependency: 0
+    cash_st:
+      field: ff_cash_st
+      frequencyDependency: 0
+    debt:
+      field: ff_debt
+      frequencyDependency: 0
+    net_debt:
+      field: ff_net_debt
+      frequencyDependency: 0
+    net_inc:
+      field: ff_net_inc
+      frequencyDependency: 1
+    oper_cf:
+      field: ff_oper_cf
+      frequencyDependency: 1
+    #asset_turn:
+      #field: ff_asset_turn
+      #frequencyDependency: 0
+
+  ratio:
+
+    # Ratio 1
+    Dividend_Yield: 
+      isRatio: 1
+      dataField: 
+        - div_yld
+      data_frequency:
+        - qf
+        - af
+      monLag: 3
+      maxFfillMon: 12
+      format: percentage
+
+    # Ratio 2
+    #Earnings_Yield:
+      #isRatio: 1
+      #dataField:
+        #- earn_yld
+      #data_frequency:
+        #- qf
+        #- af
+      #monLag: 3
+      #maxFfillMon: 12
+      #format: percentage
+
+    # Ratio 3
+    Net_Margin:
+      isRatio: 1
+      dataField:
+        - net_mgn
+      data_frequency:
+        - qf
+        - af
+      monLag: 3
+      maxFfillMon: 12
+      format: percentage
+
+    # Ratio 4
+    Gross_Margin:
+      isRatio: 1
+      dataField:
+        - gross_mgn
+      data_frequency:
+        - qf
+        - af
+      monLag: 3
+      maxFfillMon: 12
+      format: percentage
+
+    # Ratio 5
+    #Asset_Turnover:
+      #isRatio: 1
+      #dataField:
+        #- asset_turn
+      #data_frequency:
+        #- qf
+        #- af
+      #monLag: 3
+      #maxFfillMon: 12
+      #format: normal
+
+    # Ratio 6
+    ROE:
+      isRatio: 0
+      nominator: net_inc
+      denominator: shldrs_eq
+      data_frequency:
+        - qf
+        - af
+      monLag: 3
+      maxFfillMon: 12
+
+    # Ratio 7
+    ROA:
+      isRatio: 0
+      nominator: net_inc
+      denominator: assets
+      data_frequency:
+        - qf
+        - af
+      monLag: 3
+      maxFfillMon: 12
+
+    # Ratio 8
+    Debt_to_Equity:
+      isRatio: 0
+      nominator: debt
+      denominator: shldrs_eq
+      data_frequency:
+        - qf
+        - af
+      monLag: 3
+      maxFfillMon: 12
+
