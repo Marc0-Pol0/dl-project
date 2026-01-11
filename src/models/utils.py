@@ -2,27 +2,49 @@ import torch
 from torch.utils.data import DataLoader
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import confusion_matrix
+import os
 
+# Function to generate and save confusion matrix plot
+def save_confusion_matrix_plot(all_targets, all_predictions, model_name):
+    class_names = ['UP (0)', 'DOWN (1)', 'NEUTRAL (2)']
+    cm = confusion_matrix(all_targets, all_predictions)
+    
+    plt.figure(figsize=(8, 6))
+    sns.set_context("paper", font_scale=1.4) 
+    
+    # Create the heatmap
+    sns.heatmap(
+        cm, 
+        annot=True, 
+        fmt='d', 
+        cmap='Blues', 
+        xticklabels=class_names, 
+        yticklabels=class_names,
+        cbar=True
+    )
+    
+    plt.ylabel('True Label', fontweight='bold')
+    plt.xlabel('Predicted Label', fontweight='bold')
+    plt.title(f'Confusion Matrix: {model_name}', fontweight='bold')
+    
+    # Save the plot for your 4-page PDF report
+    file_path = f'/Users/nathansoldati/Desktop/ETH/Master/3. Semester/Deep Learning/Project/dl-project/src/figures/cm_{model_name.lower().replace(" ", "_")}.png'
+    plt.savefig(file_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"Saved confusion matrix plot to: {file_path}")
+
+
+# Oversampling function for minority classes
 def oversample_minority_classes(samples_df: pd.DataFrame, target_ratio: float = 0.5) -> pd.DataFrame:
-    """
-    Performs random oversampling on the minority classes (0 and 1) 
-    in the training set to address class imbalance.
-    
-    Args:
-        samples_df: DataFrame containing all training sequences/samples, 
-                    with a 'label' column.
-        target_ratio: Target size for minority classes relative to the majority.
-        
-    Returns:
-        A new DataFrame with duplicated samples and a fully shuffled index.
-    """
-    
-    # 1. Identify Majority Class and its Count
+    # Identify Majority Class and its Count
     label_counts = samples_df['label'].value_counts()
     majority_class = label_counts.index[0]
     majority_count = label_counts.iloc[0]
     
-    # 2. Determine Target Count
+    # Determine Target Count
     target_count = int(majority_count * target_ratio)
     
     print(f"\n--- Applying Sequence Oversampling ---")
@@ -31,7 +53,7 @@ def oversample_minority_classes(samples_df: pd.DataFrame, target_ratio: float = 
 
     df_list = [samples_df[samples_df['label'] == majority_class]]
     
-    # 3. Process Minority Classes (UP=0, DOWN=1)
+    # Process Minority Classes (UP=0, DOWN=1)
     for minority_class in [0, 1]:
         if minority_class not in label_counts.index:
             continue
@@ -59,18 +81,15 @@ def oversample_minority_classes(samples_df: pd.DataFrame, target_ratio: float = 
         else:
             df_list.append(df_minority) # Add if already at target count or higher
 
-    # 4. Concatenate all classes and shuffle the final training set
+    # Concatenate all classes and shuffle the final training set
     df_balanced = pd.concat(df_list, ignore_index=True)
     df_balanced = df_balanced.sample(frac=1, random_state=42).reset_index(drop=True)
     
     print(f"Final Total Samples (Training): {len(df_balanced)}")
-    print("---------------------------------")
     return df_balanced
 
-
-
+# Function to check and print class distribution in a DataLoader
 def check_class_distribution(dataloader: DataLoader, dataset_name: str, device: torch.device):
-    """Calculates and prints the total count and distribution of each class."""
     
     class_counts = {0: 0, 1: 0, 2: 0} # 0=Up, 1=Down, 2=Neutral
     total_samples = 0
@@ -79,9 +98,6 @@ def check_class_distribution(dataloader: DataLoader, dataset_name: str, device: 
     dataset = dataloader.dataset 
     
     print(f"\n--- Class Distribution Check ({dataset_name}) ---")
-
-    # Iterate through the samples list directly for efficiency (if possible), 
-    # but the safest way is via the DataLoader or by accessing the samples_df attribute.
     
     # Assuming StockDataset has a 'samples_df' attribute (as per your dataloaders.py):
     if hasattr(dataset, 'samples_df'):
