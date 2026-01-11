@@ -13,3 +13,6 @@ yfinance
 beautifulsoup4
 requests
 seaborn
+ipykernel
+pyarrow
+fastparquet

@@ -31,7 +31,7 @@ def save_confusion_matrix_plot(all_targets, all_predictions, model_name):
     plt.title(f'Confusion Matrix: {model_name}', fontweight='bold')
     
     # Save the plot for your 4-page PDF report
-    file_path = f'/Users/nathansoldati/Desktop/ETH/Master/3. Semester/Deep Learning/Project/dl-project/src/figures/cm_{model_name.lower().replace(" ", "_")}.png'
+    file_path = f'./src/figures/cm_{model_name.lower().replace(" ", "_")}.png'
     plt.savefig(file_path, dpi=300, bbox_inches='tight')
     plt.close()
     print(f"Saved confusion matrix plot to: {file_path}")
