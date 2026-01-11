@@ -1,4 +1,3 @@
-# Preprocess raw data to create news and fundamentals dataset
 import os
 import pandas as pd
 import datetime as dt
@@ -6,8 +5,6 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch
 from sentiment import get_finbert_probabilities
 
-pd.set_option('display.max_rows', None)
-pd.set_option('display.max_columns', None)
 
 # Device configuration
 if torch.cuda.is_available():
@@ -72,7 +69,7 @@ if FUND:
 
         # Forward-fill missing values
         fundamentals_df = fundamentals_df.ffill().bfill()
-        fundamentals_df = fundamentals_df.reset_index()               # index becomes a column named 'index'
+        fundamentals_df = fundamentals_df.reset_index() 
         fundamentals_df = fundamentals_df.rename(columns={'index': 'date'})
 
         fundamentals_dict[ticker] = fundamentals_df
