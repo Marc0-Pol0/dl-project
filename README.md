@@ -56,10 +56,10 @@ Predicting stock price reactions to earnings announcements by combining firm fun
    Dataset was generated offline using `dataset_generation/DL_project_data.ipynb`
    and saved as `DL_dataset.pkl` (generation requires private API access). All the data necessary data is saved under the data repository.
 
-4. **Train**: Configure `MODEL_SAVE_PATH` and run the file src/train.py. Trained model is saved to the networks/ directory. On the ETH student cluster, run _sbatch runner.sh_.
+4. **Train**: Configure `MODEL_SAVE_PATH` and run the file `src/train.py`. Trained model is saved to the `networks/` directory. On the ETH student cluster, run _sbatch runner.sh_.
 
 
-5. **Evaluate**: Comment `run_training()` in src/train.py and run the script. Can also evaluate different pre-trained models from the networks/ directory. 
+5. **Evaluate**: Comment `run_training()` in `src/train.py` and run the script. The models analyzed in the report are the following: `lstm_buffer_ea_date` and `attention_buffer_ea_date`. Select `MODEL_SAVE_PATH` in the configuration class accordingly. You can also evaluate different pre-trained models from the `networks/` directory. 
 
 ## Setup
 Requirements:
