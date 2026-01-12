@@ -1,13 +1,11 @@
+import pandas as pd
+from sklearn.metrics import confusion_matrix
 import torch
 from torch.utils.data import DataLoader
-import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.metrics import confusion_matrix
-import os
 
-# Function to generate and save confusion matrix plot
+
 def save_confusion_matrix_plot(all_targets, all_predictions, model_name):
     class_names = ['UP (0)', 'DOWN (1)', 'NEUTRAL (2)']
     cm = confusion_matrix(all_targets, all_predictions)
