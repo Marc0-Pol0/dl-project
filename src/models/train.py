@@ -24,11 +24,11 @@ class Config:
     PATIENCE = NUM_EPOCHS    # No Early Stopping, dropout regularization used.
     INPUT_SIZE = 21     # Number of input features
     OUTPUT_SIZE = 3     # Number of output classes (UP, DOWN, NEUTRAL)
-    MODEL_SAVE_PATH = './networks/attention_buffer_ea_date.pth'
+    MODEL_SAVE_PATH = './networks/lstm_buffer_ea_date.pth'  # Path to save (or load) the trained model
     DIM_FFN = 4 * HIDDEN_SIZE       # Feedforward network dimension for Transformer
     NUMBER_OF_ENCODERS = 2      # Transformer encoder layers
     NUMBER_OF_HEADS = 4     # Multi-head attention heads
-    MODEL='attention'    # Chose model in {'lstm', 'attention'}
+    MODEL='lstm'    # Chose model in {'lstm', 'attention'}
 
 # Setup device
 def setup_device():
@@ -255,6 +255,7 @@ def run_testing(model: nn.Module, dataloader: DataLoader, criterion: nn.Module, 
 
 
 if __name__ == '__main__':
+    # Commented out training for testing/evaluation purposes
     run_training()
 
     device = setup_device()
