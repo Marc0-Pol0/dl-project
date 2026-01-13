@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -14,23 +13,6 @@ from sklearn.metrics import (
 )
 
 
-@dataclass(frozen=True)
-class SplitConfig:
-    # For 3-class from the new builder, use "label".
-    # For old behavior, use "label_up".
-    label_col: str = "label"
-    date_col: str = "earnings_day"
-    feature_prefixes: tuple[str, ...] = ("sent_", "f_")
-    split_date: str = "2025-05-01"
-    val_tail_frac: float = 0.15
-
-    # For multiclass string labels (only used when label_col == "label" or dtype is non-numeric)
-    # Must match the builder's label names.
-    class_order: tuple[str, ...] = ("down", "neutral", "up")
-
-
-# -------------------------- IO --------------------------
-
 def read_table(path: Path) -> pd.DataFrame:
     suf = path.suffix.lower()
     if suf == ".parquet":
@@ -40,8 +22,6 @@ def read_table(path: Path) -> pd.DataFrame:
     raise ValueError(f"Unsupported input extension '{suf}'. Use .parquet or .csv")
 
 
-# -------------------------- schema / hygiene --------------------------
-
 def ensure_sorted_datetime(df: pd.DataFrame, date_col: str) -> pd.DataFrame:
     d = df.copy()
     d[date_col] = pd.to_datetime(d[date_col], errors="coerce")
@@ -49,16 +29,12 @@ def ensure_sorted_datetime(df: pd.DataFrame, date_col: str) -> pd.DataFrame:
     return d.sort_values(date_col).reset_index(drop=True)
 
 
-# -------------------------- feature selection --------------------------
-
 def pick_feature_columns(df: pd.DataFrame, prefixes: Iterable[str]) -> list[str]:
     prefixes = tuple(prefixes)
     feats = [c for c in df.columns if any(c.startswith(p) for p in prefixes)]
     feats.sort()
     return feats
 
-
-# -------------------------- time splits --------------------------
 
 def time_split(df: pd.DataFrame, date_col: str, split_date: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     d = ensure_sorted_datetime(df, date_col)
@@ -87,19 +63,21 @@ def time_val_split(train: pd.DataFrame, date_col: str, tail_frac: float) -> tupl
     return tr, va
 
 
-def make_splits(df: pd.DataFrame, cfg: SplitConfig) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, list[str]]:
-    d = ensure_sorted_datetime(df, cfg.date_col)
+def make_splits(
+        df: pd.DataFrame, date_col: str,feature_prefixes: Sequence[str], split_date: str, val_tail_frac: float
+    ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, list[str]]:
+    d = ensure_sorted_datetime(df, date_col)
 
-    feature_cols = pick_feature_columns(d, cfg.feature_prefixes)
+    feature_cols = pick_feature_columns(d, feature_prefixes)
     if len(feature_cols) == 0:
-        raise ValueError(f"No feature columns found for prefixes={cfg.feature_prefixes}")
+        raise ValueError(f"No feature columns found for prefixes={feature_prefixes}")
 
-    train_full, test = time_split(d, cfg.date_col, cfg.split_date)
-    train, val = time_val_split(train_full, cfg.date_col, cfg.val_tail_frac)
+    train_full, test = time_split(d, date_col, split_date)
+    train, val = time_val_split(train_full, date_col, val_tail_frac)
     return train, val, test, feature_cols
 
 
-def print_split_sizes(df: pd.DataFrame, train: pd.DataFrame, val: pd.DataFrame, test: pd.DataFrame) -> None:
+def print_split_sizes(df: pd.DataFrame, date_col: str, train: pd.DataFrame, val: pd.DataFrame, test: pd.DataFrame) -> None:
     def _rng(x: pd.DataFrame, col: str) -> str:
         if len(x) == 0 or col not in x.columns:
             return "∅"
@@ -110,17 +88,12 @@ def print_split_sizes(df: pd.DataFrame, train: pd.DataFrame, val: pd.DataFrame, 
     print("rows:", len(df), "| train:", len(train), "| val:", len(val), "| test:", len(test))
     if len(df) > 0:
         print("date ranges:",
-              "train:", _rng(train, "earnings_day"),
-              "| val:", _rng(val, "earnings_day"),
-              "| test:", _rng(test, "earnings_day"))
+              "train:", _rng(train, date_col),
+              "| val:", _rng(val, date_col),
+              "| test:", _rng(test, date_col))
 
 
-# -------------------------- X/y extraction --------------------------
-
-def encode_labels(
-    y: pd.Series,
-    class_order: Sequence[str] | None = None,
-) -> tuple[np.ndarray, list[str]]:
+def encode_labels(y: pd.Series, class_order: Sequence[str] | None = None) -> tuple[np.ndarray, list[str]]:
     """
     Encode labels into int indices [0..K-1] and return (y_int, class_names).
     - If y is numeric/bool already, keeps unique sorted values as class names.
@@ -136,7 +109,6 @@ def encode_labels(
         class_names = [str(int(v)) for v in uniq]
         return y_int.astype(int), class_names
 
-    # string/categorical path
     y_str = y.astype(str)
     if class_order is None:
         classes = sorted(pd.unique(y_str))
@@ -151,10 +123,7 @@ def encode_labels(
 
 
 def get_xy(
-    df: pd.DataFrame,
-    feature_cols: Sequence[str],
-    label_col: str,
-    class_order: Sequence[str] | None = None,
+    df: pd.DataFrame, feature_cols: Sequence[str], label_col: str, class_order: Sequence[str] | None = None
 ) -> tuple[np.ndarray, np.ndarray, list[str]]:
     if label_col not in df.columns:
         raise KeyError(f"Missing label column: {label_col}")
@@ -163,8 +132,6 @@ def get_xy(
     y_int, class_names = encode_labels(df[label_col], class_order=class_order)
     return x, y_int, class_names
 
-
-# -------------------------- evaluation --------------------------
 
 def eval_binary(y_true: np.ndarray, y_prob: np.ndarray, thresh: float = 0.5, eps: float = 1e-7) -> dict[str, float]:
     y_true = np.asarray(y_true).astype(int)
@@ -192,10 +159,7 @@ def eval_binary(y_true: np.ndarray, y_prob: np.ndarray, thresh: float = 0.5, eps
 
 
 def eval_multiclass(
-    y_true: np.ndarray,
-    y_proba: np.ndarray,
-    class_names: Sequence[str] | None = None,
-    eps: float = 1e-7,
+    y_true: np.ndarray, y_proba: np.ndarray, class_names: Sequence[str] | None = None, eps: float = 1e-7
 ) -> dict[str, float]:
     """
     Multiclass evaluation.
@@ -223,7 +187,6 @@ def eval_multiclass(
     acc = float(accuracy_score(y_true, y_pred))
     ll = float(log_loss(y_true, y_proba, labels=labels))
 
-    # Multiclass Brier: mean ||p - onehot||^2
     onehot = np.eye(k, dtype=float)[y_true]
     brier_mc = float(np.mean(np.sum((y_proba - onehot) ** 2, axis=1)))
 

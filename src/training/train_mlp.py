@@ -300,11 +300,6 @@ def main() -> None:
         class_order=tuple(split_cfg.class_order),
     )
 
-    # Sanity: require at least 2 classes in train
-    uniq = np.unique(y_tr)
-    if len(uniq) < 2:
-        raise ValueError(f"Training split has <2 classes: {uniq}. Check split_date/label generation.")
-
     out_dim = cfg.num_classes if cfg.multiclass else 1
     model = MLP(in_dim=int(x_tr.shape[1]), hidden_dims=cfg.hidden_dims, dropout=cfg.dropout, out_dim=out_dim).to(cfg.device)
     opt = torch.optim.AdamW(model.parameters(), lr=float(cfg.lr), weight_decay=float(cfg.weight_decay))
