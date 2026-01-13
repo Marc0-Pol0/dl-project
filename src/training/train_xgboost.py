@@ -25,6 +25,7 @@ SPLIT_DATE = "2025-05-01"
 VAL_TAIL_FRAC = 0.15
 
 RANDOM_STATE = 0
+CLASS_ORDER = ["heavy_down", "down", "neutral", "up", "heavy_up"]
 
 N_ESTIMATORS = 600
 MAX_DEPTH = 4
@@ -55,7 +56,6 @@ def build_xgb_pipeline() -> Pipeline:
         n_jobs=-1,
         eval_metric="mlogloss",
         tree_method="hist",
-        num_class=3,
     )
 
     return Pipeline(steps=[("impute", pre), ("clf", clf)])
@@ -66,7 +66,7 @@ def run_split(name: str, pipe: Pipeline, part: pd.DataFrame, feature_cols: list[
         print(f"\n[{name}] empty")
         return
 
-    x, y, class_names = get_xy(part, feature_cols, "label", class_order=("down", "neutral", "up"))
+    x, y, class_names = get_xy(part, feature_cols, "label", class_order=CLASS_ORDER)
 
     print(f"\n[{name}]")
     proba = pipe.predict_proba(x)  # (n, K)
@@ -81,13 +81,13 @@ def main() -> None:
     if not feature_cols:
         raise ValueError(f"No feature columns found with prefixes: {('sent_', 'f_')}")
 
-    train_all, test = time_split(df, "earnings_day", SPLIT_DATE)
-    train, val = time_val_split(train_all, "earnings_day", VAL_TAIL_FRAC)
+    train_all, test = time_split(df, SPLIT_DATE, date_col="earnings_day")
+    train, val = time_val_split(train_all, VAL_TAIL_FRAC, date_col="earnings_day")
 
-    print_split_sizes(df, "earnings_day", train, val, test)
+    print_split_sizes(df, train, val, test, date_col="earnings_day")
     print("feature_cols:", len(feature_cols))
     print("label_col:", "label")
-    x_tr, y_tr, class_names = get_xy(train, feature_cols, "label", class_order=("down", "neutral", "up"))
+    x_tr, y_tr, class_names = get_xy(train, feature_cols, "label", class_order=CLASS_ORDER)
 
     pipe = build_xgb_pipeline()
     pipe.fit(x_tr, y_tr)
@@ -101,6 +101,7 @@ def main() -> None:
         "pipeline": pipe,
         "feature_cols": feature_cols,
         "class_names": class_names,
+        "class_order": CLASS_ORDER,
         "data_path": str(DATA),
     }
     joblib.dump(bundle, OUT)
