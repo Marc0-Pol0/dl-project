@@ -4,6 +4,7 @@ from typing import Iterable, Sequence
 import numpy as np
 import pandas as pd
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, log_loss
+import matplotlib.pyplot as plt
 
 
 def read_table(path: Path) -> pd.DataFrame:
@@ -205,15 +206,13 @@ def _save_confusion_matrix_plot(
     - class_names: list of display names (len K)
     - model_name: used in title + filename
     """
-    import matplotlib.pyplot as plt
-
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     cm = confusion_matrix(y_true, y_pred, labels=list(range(len(class_names))))
 
     fig, ax = plt.subplots(figsize=(9, 7))
-    im = ax.imshow(cm)
+    im = ax.imshow(cm, cmap="Blues")
 
     for i in range(cm.shape[0]):
         for j in range(cm.shape[1]):

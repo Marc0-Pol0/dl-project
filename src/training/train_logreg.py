@@ -25,12 +25,12 @@ OUT = Path("networks/logreg_earnings_model.joblib")
 SPLIT_DATE = "2025-05-01"
 VAL_TAIL_FRAC = 0.15
 
-C = 1.0
-MAX_ITER = 10000
+C = 5.0
+MAX_ITER = 1000
 BALANCED = True
 
 RANDOM_STATE = 0
-CLASS_ORDER = ["heavy_down", "down", "neutral", "up", "heavy_up"]
+CLASS_ORDER = ["down", "neutral", "up"]
 
 
 def build_logreg_pipeline() -> Pipeline:

@@ -14,8 +14,7 @@ OUT = Path("./data/trainable/event_table_500.parquet")
 
 LOOKBACK_TRADING_DAYS = 30
 
-NEUTRAL_RET_EPS = 0.015  # |ret| <= eps -> neutral
-HEAVY_RET_EPS = 0.06  # |ret| >= heavy_eps -> heavy_{up,down}
+NEUTRAL_RET_EPS = 0.02  # |ret| <= eps -> neutral
 
 
 def load_pickle(path: Path) -> Any:
@@ -103,13 +102,9 @@ def make_event_id(ticker: str, ts_ny: pd.Timestamp) -> str:
     return f"{ticker}_{ts_ny.strftime('%Y%m%dT%H%M%S%z')}"
 
 
-def label_5way_from_return(ret: float, neutral_eps: float, heavy_eps: float) -> str:
+def label_3way_from_return(ret: float, neutral_eps: float) -> str:
     if abs(ret) <= neutral_eps:
         return "neutral"
-    elif ret >= heavy_eps:
-        return "heavy_up"
-    elif ret <= -heavy_eps:
-        return "heavy_down"
     elif ret > 0:
         return "up"
     else:
@@ -283,6 +278,7 @@ def build_event_table(
     rows: list[dict[str, object]] = []
 
     dropped_outside = 0
+    dropped_intraday = 0
     dropped_unmappable = 0
     dropped_missing_prices = 0
     dropped_missing_features = 0
@@ -311,6 +307,10 @@ def build_event_table(
                 continue
 
             event_type = classify_event_type(ts_ny)
+            if event_type == "INTRADAY":
+                dropped_intraday += 1
+                continue
+
             spec = make_event_spec(idx, calendar_day, event_type)
             if spec is None:
                 dropped_unmappable += 1
@@ -339,7 +339,7 @@ def build_event_table(
                 "sent_last_included_day": spec.last_sentiment_day,
                 "return": float(ret),
                 "abs_return": float(abs(ret)),
-                "label": label_5way_from_return(ret, NEUTRAL_RET_EPS, HEAVY_RET_EPS),
+                "label": label_3way_from_return(ret, NEUTRAL_RET_EPS),
             }
             row.update(sent_feats)
             row.update(snap)
@@ -353,6 +353,7 @@ def build_event_table(
     print(
         "[INFO] dropped:",
         f"outside_window={dropped_outside},",
+        f"intraday={dropped_intraday},",
         f"unmappable={dropped_unmappable},",
         f"missing_prices={dropped_missing_prices},",
         f"missing_features={dropped_missing_features}",
@@ -402,7 +403,7 @@ def main() -> None:
 
         counts = table["label"].value_counts(dropna=False)
         shares = (counts / counts.sum()).rename("share")
-        print(f"Label distribution (neutral={NEUTRAL_RET_EPS:.6f}, heavy={HEAVY_RET_EPS:.6f}):\n", counts)
+        print(f"Label distribution (neutral={NEUTRAL_RET_EPS:.6f}):\n", counts)
         print("Label shares:\n", shares)
 
     OUT.parent.mkdir(parents=True, exist_ok=True)

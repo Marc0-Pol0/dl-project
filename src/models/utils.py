@@ -6,29 +6,34 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 
-def save_confusion_matrix_plot(all_targets, all_predictions, model_name):
+def save_confusion_matrix_plot(all_targets, all_predictions, model_name: str, weighted_f1: float | None = None):
     class_names = ['UP (0)', 'DOWN (1)', 'NEUTRAL (2)']
     cm = confusion_matrix(all_targets, all_predictions)
-    
+
     plt.figure(figsize=(8, 6))
-    sns.set_context("paper", font_scale=1.4) 
-    
+    sns.set_context("paper", font_scale=1.4)
+
     sns.heatmap(
-        cm, 
-        annot=True, 
-        fmt='d', 
-        cmap='Blues', 
-        xticklabels=class_names, 
+        cm,
+        annot=True,
+        fmt="d",
+        cmap="Blues",
+        xticklabels=class_names,
         yticklabels=class_names,
-        cbar=True
+        cbar=True,
     )
-    
-    plt.ylabel('True Label', fontweight='bold')
-    plt.xlabel('Predicted Label', fontweight='bold')
-    plt.title(f'Confusion Matrix: {model_name}', fontweight='bold')
-    
-    file_path = f'./src/figures/cm_{model_name.lower().replace(" ", "_")}.png'
-    plt.savefig(file_path, dpi=300, bbox_inches='tight')
+
+    plt.ylabel("True Label", fontweight="bold")
+    plt.xlabel("Predicted Label", fontweight="bold")
+
+    if weighted_f1 is None:
+        title = f"Confusion Matrix: {model_name}"
+    else:
+        title = f"Confusion Matrix: {model_name} | weighted F1={weighted_f1:.4f}"
+    plt.title(title, fontweight="bold")
+
+    file_path = f"./src/figures/cm_{model_name.lower().replace(' ', '_')}.png"
+    plt.savefig(file_path, dpi=300, bbox_inches="tight")
     plt.close()
     print(f"Saved confusion matrix plot to: {file_path}")
 
