@@ -155,13 +155,15 @@ def train_one_epoch(
     return total / max(1, n)
 
 
-def run_split_multiclass(name: str, model: nn.Module, x: np.ndarray, y: np.ndarray, class_names: list[str]) -> None:
+def run_split(
+        name: str, model: nn.Module, x: np.ndarray, y: np.ndarray, class_names: list[str], model_name: str = "mlp"
+    ) -> None:
     if len(y) == 0:
         print(f"\n[{name}] empty")
         return
     print(f"\n[{name}]")
     proba = predict_proba_multiclass(model, x, BATCH_SIZE, DEVICE)
-    eval_multiclass(y, proba, class_names=class_names)
+    eval_multiclass(y, proba, class_names=class_names, model_name=model_name)
 
 
 def main() -> None:
@@ -246,10 +248,9 @@ def main() -> None:
     if best_state is not None:
         model.load_state_dict(best_state)
 
-    run_split_multiclass("train", model, x_tr, y_tr, class_names)
-    if len(val) > 0:
-        run_split_multiclass("val", model, x_va, y_va, class_names)
-    run_split_multiclass("test", model, x_te, y_te, class_names)
+    run_split("train", model, x_tr, y_tr, class_names, model_name="mlp_train")
+    run_split("val", model, x_va, y_va, class_names, model_name="mlp_val")
+    run_split("test", model, x_te, y_te, class_names, model_name="mlp_test")
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     bundle = {

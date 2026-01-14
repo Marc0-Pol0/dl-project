@@ -52,7 +52,14 @@ def build_logreg_pipeline() -> Pipeline:
     return Pipeline(steps=[("pre", pre), ("clf", clf)])
 
 
-def run_split(name: str, pipe: Pipeline, part: pd.DataFrame, feature_cols: list[str], class_order: list[str]) -> None:
+def run_split(
+        name: str, 
+        pipe: Pipeline, 
+        part: pd.DataFrame, 
+        feature_cols: list[str], 
+        class_order: list[str], 
+        model_name: str = "logreg",
+    ) -> None:
     """Run evaluation on a data split and print metrics."""
     if len(part) == 0:
         print(f"\n[{name}] empty")
@@ -62,7 +69,7 @@ def run_split(name: str, pipe: Pipeline, part: pd.DataFrame, feature_cols: list[
 
     print(f"\n[{name}]")
     proba = pipe.predict_proba(x)  # (n, K)
-    eval_multiclass(y, proba, class_names=class_names)
+    eval_multiclass(y, proba, class_names=class_names, model_name=model_name)
 
 
 def main() -> None:
@@ -91,9 +98,9 @@ def main() -> None:
 
     pipe.fit(x_tr, y_tr)
 
-    run_split("train", pipe, train, feature_cols, CLASS_ORDER)
-    run_split("val", pipe, val, feature_cols, CLASS_ORDER)
-    run_split("test", pipe, test, feature_cols, CLASS_ORDER)
+    run_split("train", pipe, train, feature_cols, CLASS_ORDER, model_name="logreg_train")
+    run_split("val", pipe, val, feature_cols, CLASS_ORDER, model_name="logreg_val")
+    run_split("test", pipe, test, feature_cols, CLASS_ORDER, model_name="logreg_test")
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     bundle = {

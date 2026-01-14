@@ -61,7 +61,7 @@ def build_xgb_pipeline() -> Pipeline:
     return Pipeline(steps=[("impute", pre), ("clf", clf)])
 
 
-def run_split(name: str, pipe: Pipeline, part: pd.DataFrame, feature_cols: list[str]) -> None:
+def run_split(name: str, pipe: Pipeline, part: pd.DataFrame, feature_cols: list[str], model_name: str = "xgb") -> None:
     if len(part) == 0:
         print(f"\n[{name}] empty")
         return
@@ -70,7 +70,7 @@ def run_split(name: str, pipe: Pipeline, part: pd.DataFrame, feature_cols: list[
 
     print(f"\n[{name}]")
     proba = pipe.predict_proba(x)  # (n, K)
-    eval_multiclass(y, proba, class_names=class_names)
+    eval_multiclass(y, proba, class_names=class_names, model_name=model_name)
 
 
 def main() -> None:
@@ -92,9 +92,9 @@ def main() -> None:
     pipe = build_xgb_pipeline()
     pipe.fit(x_tr, y_tr)
 
-    run_split("train", pipe, train, feature_cols)
-    run_split("val", pipe, val, feature_cols)
-    run_split("test", pipe, test, feature_cols)
+    run_split("train", pipe, train, feature_cols, model_name="xgb_train")
+    run_split("val", pipe, val, feature_cols, model_name="xgb_val")
+    run_split("test", pipe, test, feature_cols, model_name="xgb_test")
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     bundle = {

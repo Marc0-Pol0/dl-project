@@ -191,17 +191,71 @@ def get_xy(
     return X, y_int, class_names
 
 
+def _save_confusion_matrix_plot(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    class_names: Sequence[str],
+    model_name: str,
+    out_dir: Path = Path("src/figures"),
+) -> Path:
+    """
+    Save a confusion-matrix heatmap as a PNG using matplotlib only (no seaborn dependency).
+
+    - y_true, y_pred: integer labels 0..K-1
+    - class_names: list of display names (len K)
+    - model_name: used in title + filename
+    """
+    import matplotlib.pyplot as plt
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    cm = confusion_matrix(y_true, y_pred, labels=list(range(len(class_names))))
+
+    fig, ax = plt.subplots(figsize=(9, 7))
+    im = ax.imshow(cm)
+
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            ax.text(j, i, f"{cm[i, j]}", ha="center", va="center")
+
+    ax.set_title(f"Confusion Matrix: {model_name}")
+    ax.set_xlabel("Predicted Label")
+    ax.set_ylabel("True Label")
+
+    ax.set_xticks(np.arange(len(class_names)))
+    ax.set_yticks(np.arange(len(class_names)))
+    ax.set_xticklabels(list(class_names), rotation=45, ha="right")
+    ax.set_yticklabels(list(class_names))
+
+    fig.colorbar(im, ax=ax)
+
+    safe = model_name.lower().replace(" ", "_")
+    file_path = out_dir / f"cm_{safe}.png"
+    fig.tight_layout()
+    fig.savefig(file_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    print(f"Saved confusion matrix plot to: {file_path}")
+    return file_path
+
+
 def eval_multiclass(
     y_true: np.ndarray,
     y_proba: np.ndarray,
     class_names: Sequence[str] | None = None,
     eps: float = 1e-7,
+    model_name: str = "model",
+    save_cm_plot: bool = True,
+    cm_out_dir: Path = Path("src/figures"),
 ) -> dict[str, float]:
     """
     Multiclass evaluation.
 
     y_proba: shape (n, K), rows sum ~ 1.
     Prints: accuracy, logloss, multiclass Brier score, confusion matrix, classification report.
+
+    If save_cm_plot=True, saves a confusion matrix figure to cm_out_dir.
     """
     y_true = np.asarray(y_true).astype(int)
     y_proba = np.asarray(y_proba).astype(float)
@@ -244,5 +298,14 @@ def eval_multiclass(
     print(f"brier_mc: {brier_mc:.4f}")
     print("confusion_matrix:\n", cm)
     print("classification_report:\n", rep)
+
+    if save_cm_plot:
+        _save_confusion_matrix_plot(
+            y_true=y_true,
+            y_pred=y_pred,
+            class_names=target_names,
+            model_name=model_name,
+            out_dir=cm_out_dir,
+        )
 
     return {"accuracy": acc, "logloss": ll, "brier_mc": brier_mc}

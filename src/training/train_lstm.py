@@ -332,12 +332,13 @@ def train_one_epoch(
     return total / max(1, n)
 
 
-def eval_split_multiclass(
+def eval_split(
     name: str,
     model: nn.Module,
     loader: DataLoader,
     y_true: np.ndarray,
     class_names: list[str],
+    model_name: str = "lstm",
 ) -> dict[str, float]:
     if len(y_true) == 0:
         print(f"\n[{name}] empty")
@@ -345,7 +346,7 @@ def eval_split_multiclass(
 
     proba = predict_proba_multiclass(model, loader, device=DEVICE)
     print(f"\n[{name}]")
-    return eval_multiclass(np.asarray(y_true, dtype=int), proba, class_names=class_names)
+    return eval_multiclass(np.asarray(y_true, dtype=int), proba, class_names=class_names, model_name=model_name)
 
 
 def main() -> None:
@@ -521,10 +522,10 @@ def main() -> None:
         collate_fn=collate_padded,
     )
 
-    eval_split_multiclass("train", model, train_eval_loader, y_tr, class_names)
+    eval_split("train", model, train_eval_loader, y_tr, class_names, model_name="lstm_train")
     if val_loader is not None:
-        eval_split_multiclass("val", model, val_loader, y_va, class_names)
-    eval_split_multiclass("test", model, test_loader, y_te, class_names)
+        eval_split("val", model, val_loader, y_va, class_names, model_name="lstm_val")
+    eval_split("test", model, test_loader, y_te, class_names, model_name="lstm_test")
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     bundle = {

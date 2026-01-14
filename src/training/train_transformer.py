@@ -283,12 +283,13 @@ def train_one_epoch(
     return total / max(1, n)
 
 
-def eval_split_multiclass(
+def eval_split(
     name: str,
     model: nn.Module,
     loader: DataLoader,
     y: np.ndarray,
     class_names: list[str],
+    model_name: str = "transformer",
 ) -> dict[str, float]:
     if len(y) == 0:
         print(f"\n[{name}] empty")
@@ -296,7 +297,7 @@ def eval_split_multiclass(
 
     proba = predict_proba_multiclass(model, loader, DEVICE)
     print(f"\n[{name}]")
-    return eval_multiclass(np.asarray(y, dtype=int), proba, class_names=class_names)
+    return eval_multiclass(np.asarray(y, dtype=int), proba, class_names=class_names, model_name=model_name)
 
 
 def main() -> None:
@@ -448,10 +449,10 @@ def main() -> None:
         model.load_state_dict(best_state)
 
     train_eval_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=False, drop_last=False)
-    eval_split_multiclass("train", model, train_eval_loader, y_tr, class_names)
+    eval_split("train", model, train_eval_loader, y_tr, class_names, model_name="transformer_train")
     if val_loader is not None:
-        eval_split_multiclass("val", model, val_loader, y_va, class_names)
-    eval_split_multiclass("test", model, test_loader, y_te, class_names)
+        eval_split("val", model, val_loader, y_va, class_names, model_name="transformer_val")
+    eval_split("test", model, test_loader, y_te, class_names, model_name="transformer_test")
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     bundle = {
