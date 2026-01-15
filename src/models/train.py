@@ -358,33 +358,33 @@ def run_testing(model: nn.Module, dataloader: DataLoader, criterion: nn.Module, 
     return test_acc, test_metric, metric_label, all_targets, all_predictions
 
 
-def save_confusion_matrix_plot(all_targets, all_predictions, model_name: str, weighted_f1: float | None = None, score_name: str = "F1"):
-    class_names = ['UP (0)', 'DOWN (1)', 'NEUTRAL (2)']
-    cm = confusion_matrix(all_targets, all_predictions)
+def save_confusion_matrix_plot(all_targets, all_predictions, filename_tag: str):
+    # Desired order: DOWN / NEUTRAL / UP (both rows and columns)
+    order = [1, 2, 0]  # DOWN, NEUTRAL, UP
+    names = ["DOWN (1)", "NEUTRAL (2)", "UP (0)"]
 
-    plt.figure(figsize=(8, 6))
-    sns.set_context("paper", font_scale=1.4)
+    cm = confusion_matrix(all_targets, all_predictions)
+    cm_reordered = cm[np.ix_(order, order)]  # reorder rows AND columns
+
+    plt.figure(figsize=(8.5, 6.5))
+    sns.set_context("paper", font_scale=1.35)
 
     sns.heatmap(
-        cm,
+        cm_reordered,
         annot=True,
         fmt="d",
         cmap="Blues",
-        xticklabels=class_names,
-        yticklabels=class_names,
+        xticklabels=names,
+        yticklabels=names,
         cbar=True,
     )
 
-    plt.ylabel("True Label", fontweight="bold")
-    plt.xlabel("Predicted Label", fontweight="bold")
+    plt.ylabel("True label", fontweight="bold")
+    plt.xlabel("Predicted label", fontweight="bold")
+    plt.title(f"Confusion Matrix — {model_title()}", fontweight="bold")
 
-    if weighted_f1 is None:
-        title = f"Confusion Matrix: {model_name}"
-    else:
-        title = f"Confusion Matrix: {model_name} | {score_name}={weighted_f1:.4f}"
-    plt.title(title, fontweight="bold")
-
-    file_path = f"./src/figures/cm_{model_name.lower().replace(' ', '_')}.png"
+    os.makedirs(Config.FIG_DIR, exist_ok=True)
+    file_path = os.path.join(Config.FIG_DIR, f"cm_{filename_tag}.png")
     plt.savefig(file_path, dpi=300, bbox_inches="tight")
     plt.close()
     print(f"Saved confusion matrix plot to: {file_path}")
@@ -418,13 +418,6 @@ if __name__ == "__main__":
     )
 
     model_tag = f"{Config.MODEL}{'' if Config.USE_SENTIMENT else '_nosent'}_{Config.METRIC}"
-
-    save_confusion_matrix_plot(
-        all_targets,
-        all_predictions,
-        model_tag,
-        weighted_f1=metric_value,
-        score_name=metric_label,
-    )
+    save_confusion_matrix_plot(all_targets, all_predictions, model_tag)
 
     print("Accuracy on the test set: ", accuracy)

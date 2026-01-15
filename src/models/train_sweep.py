@@ -252,13 +252,12 @@ def append_results_csv(macro_f1: float, accuracy: float, custom_cost: float) -> 
 
 
 def save_confusion_matrix_plot(all_targets, all_predictions, filename_tag: str):
-    # Columns order: DOWN / NEUTRAL / UP
-    y_names = ["UP (0)", "DOWN (1)", "NEUTRAL (2)"]
-    x_order = [1, 2, 0]  # DOWN, NEUTRAL, UP
-    x_names = ["DOWN (1)", "NEUTRAL (2)", "UP (0)"]
+    # Desired order: DOWN / NEUTRAL / UP (both rows and columns)
+    order = [1, 2, 0]  # DOWN, NEUTRAL, UP
+    names = ["DOWN (1)", "NEUTRAL (2)", "UP (0)"]
 
     cm = confusion_matrix(all_targets, all_predictions)
-    cm_reordered = cm[:, x_order]  # reorder columns only
+    cm_reordered = cm[np.ix_(order, order)]  # reorder rows AND columns
 
     plt.figure(figsize=(8.5, 6.5))
     sns.set_context("paper", font_scale=1.35)
@@ -268,8 +267,8 @@ def save_confusion_matrix_plot(all_targets, all_predictions, filename_tag: str):
         annot=True,
         fmt="d",
         cmap="Blues",
-        xticklabels=x_names,
-        yticklabels=y_names,
+        xticklabels=names,
+        yticklabels=names,
         cbar=True,
     )
 
@@ -286,6 +285,68 @@ def save_confusion_matrix_plot(all_targets, all_predictions, filename_tag: str):
 
 def train_and_test_once() -> None:
     device = setup_device()
+
+    ckpt_path = model_checkpoint_path()
+
+    # If checkpoint already exists, skip training and directly evaluate that model.
+    if os.path.exists(ckpt_path) and os.path.getsize(ckpt_path) > 0:
+        print(f"\nFound existing checkpoint, skipping training: {ckpt_path}")
+
+        print("\nLoading data...")
+        train_loader, feature_scaler = create_dataloader(
+            batch_size=Config.BATCH_SIZE,
+            use_sentiment=Config.USE_SENTIMENT,
+            is_train=True,
+        )
+
+        xb, _ = next(iter(train_loader))
+        Config.INPUT_SIZE = xb.shape[-1]
+        Config.SEQ_LEN = xb.shape[-2]
+
+        test_loader, _ = create_dataloader(
+            batch_size=Config.BATCH_SIZE,
+            is_train=False,
+            scaler=feature_scaler,
+            use_sentiment=Config.USE_SENTIMENT,
+        )
+
+        model_test = build_model(device)
+        state_dict = torch.load(ckpt_path, map_location=device)
+        model_test.load_state_dict(state_dict)
+
+        criterion_test = nn.CrossEntropyLoss()
+
+        test_loss, test_acc, test_macro_f1, test_custom_cost, all_targets, all_predictions = evaluate_model(
+            model=model_test,
+            dataloader=test_loader,
+            criterion=criterion_test,
+            device=device,
+        )
+
+        class_names = ["UP (0)", "DOWN (1)", "NEUTRAL (2)"]
+        print("\n--- FINAL TEST RESULTS ---")
+        print(f"Test Loss: {test_loss:.4f}")
+        print(f"Test Accuracy: {test_acc*100:.2f}%")
+        print(f"Test Macro-F1: {test_macro_f1:.4f}")
+        print(f"Test Custom Cost: {test_custom_cost:.4f}")
+
+        print("\n--- CLASSIFICATION REPORT ---")
+        report = classification_report(
+            y_true=all_targets,
+            y_pred=all_predictions,
+            target_names=class_names,
+            digits=4,
+            zero_division=0,
+        )
+        print(report)
+
+        append_results_csv(macro_f1=test_macro_f1, accuracy=test_acc, custom_cost=test_custom_cost)
+
+        sent_tag = "with_sentiment" if Config.USE_SENTIMENT else "without_sentiment"
+        weighted_tag = "weighted" if Config.USE_WEIGHTED_LOSS else "unweighted"
+        file_tag = f"{Config.MODEL}_{sent_tag}_{weighted_tag}_{Config.CKPT_METRIC}"
+        save_confusion_matrix_plot(all_targets, all_predictions, filename_tag=file_tag)
+        return
 
     print("\nLoading data...")
     train_loader, feature_scaler = create_dataloader(
@@ -324,9 +385,8 @@ def train_and_test_once() -> None:
         ckpt_mode = "max"
     else:
         raise ValueError(f"Unknown CKPT_METRIC: {Config.CKPT_METRIC}")
-    
+
     early_stopper = EarlyStopper(patience=Config.PATIENCE)
-    ckpt_path = model_checkpoint_path()
 
     print(f"Starting training... (early-stop on val loss, checkpoint on {Config.CKPT_METRIC}) | {model_title()}")
     start_time = time.time()
@@ -378,7 +438,6 @@ def train_and_test_once() -> None:
     print(f"Training complete in {(time.time() - start_time):.2f} seconds.")
     print(f"Best validation loss (early stopping metric): {best_val_loss:.4f}")
     print(f"Best checkpoint {Config.CKPT_METRIC}: {best_ckpt_score:.4f}")
-
 
     print("\nReloading best checkpoint and evaluating on test set...")
 
@@ -442,10 +501,6 @@ def run_sweep():
     overall_start = time.time()
 
     for i, (ckpt_metric, model_name, use_sentiment, use_weighted_loss) in enumerate(combos, start=1):
-        if i <= 29:
-            print("\nSkipping initial test runs for brevity...")
-            continue
-
         print("\n" + "=" * 90)
         print(
             f"RUN {i}/{len(combos)} | ckpt_metric={ckpt_metric} | model={model_name} | "
