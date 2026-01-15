@@ -1,6 +1,5 @@
 import os
 import datetime as dt
-from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -18,7 +17,7 @@ PRICE_CHANGE_THRESHOLD = 0.03  # 3% threshold for UP/DOWN label
 SENTIMENT_COLS = ["positive", "neutral", "negative"]
 
 
-def calculate_label(ticker: str, ea_date: dt.datetime, consolidated_data: Dict[str, pd.DataFrame]) -> int:
+def calculate_label(ticker: str, ea_date: dt.datetime, consolidated_data: dict[str, pd.DataFrame]) -> int:
     df = consolidated_data[ticker]
 
     # Get stock prices the day after (EA influences the market on the day after) and two days before the EA date
@@ -41,8 +40,8 @@ def calculate_label(ticker: str, ea_date: dt.datetime, consolidated_data: Dict[s
 class StockDataset(Dataset):
     def __init__(
         self,
-        consolidated_data: Dict[str, pd.DataFrame],
-        ea_dates: Dict[str, List[dt.datetime]],
+        consolidated_data: dict[str, pd.DataFrame],
+        ea_dates: dict[str, list[dt.datetime]],
         scaler=None,
         is_train=True,
         use_sentiment: bool = True,
@@ -69,8 +68,7 @@ class StockDataset(Dataset):
 
                 if start_date in [consolidated_data[ticker].index[i].date() for i in range(len(consolidated_data[ticker].index))]:
                     label = calculate_label(ticker, ea_date, self.consolidated_data)
-                    if label != -1:
-                        self.samples.append((ticker, start_date, ea_date, label))
+                    self.samples.append((ticker, start_date, ea_date, label))
 
         self.samples_df = pd.DataFrame(self.samples, columns=["ticker", "start_date", "ea_date", "label"])
 
@@ -124,7 +122,7 @@ def create_dataloader(
     scaler: StandardScaler = None,
     use_sentiment: bool = True,
     **kwargs,
-) -> Tuple[DataLoader, StandardScaler]:
+) -> tuple[DataLoader, StandardScaler]:
     print("Loading feature and EA date files...")
     consolidated_data = pd.read_pickle(os.path.join(DATA_DIR, FEATURE_FILENAME))
     ea_dates = pd.read_pickle(os.path.join(DATA_DIR, EA_FILENAME))

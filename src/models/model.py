@@ -117,3 +117,31 @@ class StockTransformer(nn.Module):
         
         # logits shape: (batch_size, output_size), softmax handled in loss function
         return logits
+
+
+class StockLogReg(nn.Module):
+    """
+    Multiclass logistic regression over flattened sequence input.
+    Expects x as (B, T, F) and flattens to (B, T*F).
+    """
+
+    def __init__(self, seq_len: int, input_size: int, output_size: int):
+        super().__init__()
+        self.seq_len = int(seq_len)
+        self.input_size = int(input_size)
+        self.output_size = int(output_size)
+        self.linear = nn.Linear(self.seq_len * self.input_size, self.output_size)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dim() != 3:
+            raise ValueError(f"logreg expects (B, T, F), got {tuple(x.shape)}")
+
+        b, t, f = x.shape
+        if t != self.seq_len or f != self.input_size:
+            raise ValueError(
+                f"logreg got (T,F)=({t},{f}) but expected ({self.seq_len},{self.input_size}). "
+                "Set Config.SEQ_LEN to your dataset window length."
+            )
+
+        x = x.reshape(b, t * f)
+        return self.linear(x)
