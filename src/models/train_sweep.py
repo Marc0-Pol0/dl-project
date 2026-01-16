@@ -283,6 +283,18 @@ def save_confusion_matrix_plot(all_targets, all_predictions, filename_tag: str):
     print(f"Saved confusion matrix plot to: {file_path}")
 
 
+def compute_class_weights_from_loader(train_loader: DataLoader, num_classes: int, device: torch.device) -> torch.Tensor:
+    counts = np.zeros(num_classes, dtype=np.int64)
+    for _, y in train_loader:
+        y_np = y.detach().cpu().numpy().astype(np.int64)
+        counts += np.bincount(y_np, minlength=num_classes)
+
+    counts = np.maximum(counts, 1)
+    inv = counts.sum() / (num_classes * counts)
+    weights = torch.tensor(inv, dtype=torch.float32, device=device)
+    return weights
+
+
 def train_and_test_once() -> None:
     device = setup_device()
 
@@ -369,7 +381,7 @@ def train_and_test_once() -> None:
     model = build_model(device)
 
     if Config.USE_WEIGHTED_LOSS:
-        weights_tensor = torch.tensor([1.0, 1.3, 1.0], dtype=torch.float32).to(device)
+        weights_tensor = compute_class_weights_from_loader(train_loader, Config.OUTPUT_SIZE, device)
     else:
         weights_tensor = None
     criterion_train = nn.CrossEntropyLoss(weight=weights_tensor)
@@ -488,10 +500,10 @@ def train_and_test_once() -> None:
 
 def run_sweep():
     combos = []
-    for ckpt_metric in ["val_loss", "val_acc", "val_macro_f1"]:
+    for ckpt_metric in ["val_loss"]:
         for model_name in ["lstm", "attention", "logreg"]:
             for use_sentiment in [False, True]:
-                for use_weighted_loss in [False, True]:
+                for use_weighted_loss in [True]:
                     combos.append((ckpt_metric, model_name, use_sentiment, use_weighted_loss))
 
     print(f"Will run {len(combos)} trainings:")
