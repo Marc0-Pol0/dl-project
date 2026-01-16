@@ -25,12 +25,12 @@ if torch.cuda.is_available():
 
 
 class Config:
-    LEARNING_RATE = 1e-3
+    LEARNING_RATE = 5e-5
     NUM_EPOCHS = 40
-    BATCH_SIZE = 32
-    HIDDEN_SIZE = 128
+    BATCH_SIZE = 8
+    HIDDEN_SIZE = 64
     NUM_LAYERS = 2
-    DROPOUT_RATE = 0.2
+    DROPOUT_RATE = 0.5
     PATIENCE = 5
     INPUT_SIZE = 21
     OUTPUT_SIZE = 3  # UP, DOWN, NEUTRAL
