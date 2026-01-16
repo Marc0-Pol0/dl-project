@@ -1,301 +1,364 @@
+import os
+import time
+from dataclasses import dataclass
+
+import numpy as np
+import pandas as pd
+from sklearn.metrics import confusion_matrix, classification_report
+from sklearn.linear_model import LogisticRegression
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-import numpy as np
-import os
-import time
-from sklearn.metrics import confusion_matrix, classification_report
-import pandas as pd
-from utils import save_confusion_matrix_plot
 
-# Import your custom modules
+from utils import save_confusion_matrix_plot
 from dataloaders import create_dataloader
 from model import StockLSTM, StockTransformer
 
-# Configuration class
+
 class Config:
+    # Global switch: if False and model file exists -> skip training and reuse it
+    REDO_TRAINING_IF_EXISTS = False
+
     LEARNING_RATE = 5e-5
-    NUM_EPOCHS = 15    
+    NUM_EPOCHS = 15
     BATCH_SIZE = 8
     HIDDEN_SIZE = 64
     NUM_LAYERS = 2
-    DROPOUT_RATE = 0.5  
-    PATIENCE = NUM_EPOCHS    # No Early Stopping, dropout regularization used.
-    INPUT_SIZE = 21     # Number of input features
-    OUTPUT_SIZE = 3     # Number of output classes (UP, DOWN, NEUTRAL)
-    MODEL_SAVE_PATH = './networks/attention_buffer_ea_date.pth'
-    DIM_FFN = 4 * HIDDEN_SIZE       # Feedforward network dimension for Transformer
-    NUMBER_OF_ENCODERS = 2      # Transformer encoder layers
-    NUMBER_OF_HEADS = 4     # Multi-head attention heads
-    MODEL='attention'    # Chose model in {'lstm', 'attention'}
+    DROPOUT_RATE = 0.5
+    PATIENCE = NUM_EPOCHS
 
-# Setup device
-def setup_device():
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-    else:
-        device = torch.device("cpu")
-    return device
+    INPUT_SIZE = 21
+    OUTPUT_SIZE = 3  # UP=0, DOWN=1, NEUTRAL=2
+
+    DIM_FFN = 4 * HIDDEN_SIZE
+    NUMBER_OF_ENCODERS = 2
+    NUMBER_OF_HEADS = 4
+
+    # Choose model in {'lstm', 'attention', 'logreg'}
+    MODEL = "attention"
+
+    # Torch model path (used for lstm/attention). For logreg we save a .joblib next to it.
+    MODEL_SAVE_PATH = "./networks/attention_buffer_ea_date.pth"
+
+    # Weighted CE only used for torch models
+    CLASS_WEIGHTS_TORCH = [1.0, 1.3, 1.0]
 
 
-# Early Stopping Class (not used in this configuration, but still defined for completeness and future use)
+def setup_device() -> torch.device:
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
 class EarlyStopper:
-    def __init__(self, patience=7, min_delta=0):
+    def __init__(self, patience: int = 7, min_delta: float = 0.0):
         self.patience = patience
         self.min_delta = min_delta
         self.counter = 0
-        self.best_validation_loss = float('inf')
+        self.best_validation_loss = float("inf")
 
-    def early_stop(self, validation_loss):
+    def early_stop(self, validation_loss: float) -> bool:
         if validation_loss < self.best_validation_loss - self.min_delta:
             self.best_validation_loss = validation_loss
-            self.counter = 0  
+            self.counter = 0
             return False
-        elif validation_loss > self.best_validation_loss - self.min_delta:
-            self.counter += 1
-            if self.counter >= self.patience:
-                return True  
-            return False
-        return False
+        self.counter += 1
+        return self.counter >= self.patience
 
-# Training and evaluation functions
-def train_one_epoch(model, dataloader, criterion, optimizer, device):
 
-    model.train()  # Set model to training mode
+# =========================
+# Torch helpers
+# =========================
+def build_torch_model(device: torch.device) -> nn.Module:
+    if Config.MODEL == "attention":
+        return StockTransformer(
+            input_size=Config.INPUT_SIZE,
+            d_model=Config.HIDDEN_SIZE,
+            nhead=Config.NUMBER_OF_HEADS,
+            num_encoder_layers=Config.NUMBER_OF_ENCODERS,
+            dim_feedforward=Config.DIM_FFN,
+            output_size=Config.OUTPUT_SIZE,
+        ).to(device)
+
+    if Config.MODEL == "lstm":
+        return StockLSTM(
+            input_size=Config.INPUT_SIZE,
+            hidden_size=Config.HIDDEN_SIZE,
+            num_layers=Config.NUM_LAYERS,
+            output_size=Config.OUTPUT_SIZE,
+            dropout_rate=Config.DROPOUT_RATE,
+        ).to(device)
+
+    raise ValueError(f"Config.MODEL must be one of {{'lstm','attention','logreg'}}, got: {Config.MODEL}")
+
+
+def train_one_epoch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module, optimizer, device: torch.device) -> float:
+    model.train()
     total_loss = 0.0
-    
-    # Iterate through batches
-    for batch_idx, (X_batch, Y_batch) in enumerate(dataloader):
+    for X_batch, Y_batch in dataloader:
         X_batch, Y_batch = X_batch.to(device), Y_batch.to(device)
 
-        # Forward pass
         outputs = model(X_batch)
         loss = criterion(outputs, Y_batch)
 
-        # Backward and optimize
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
         total_loss += loss.item()
 
-    avg_loss = total_loss / len(dataloader)
-    return avg_loss
+    return total_loss / len(dataloader)
 
-# Evaluation step
-def validate_model(model, dataloader, criterion, device):
-    model.eval()  # Set model to evaluation mode
-    total_loss = 0.0
-    correct_predictions = 0
-    total_samples = 0
-    
-    with torch.no_grad():  
-        for X_batch, Y_batch in dataloader:
-            X_batch, Y_batch = X_batch.to(device), Y_batch.to(device)
 
-            # Forward pass
-            outputs = model(X_batch)
-            loss = criterion(outputs, Y_batch)
-            total_loss += loss.item()
-            
-            # Calculate accuracy
-            _, predicted = torch.max(outputs.data, 1) # Get the class with max probability
-            total_samples += Y_batch.size(0)
-            correct_predictions += (predicted == Y_batch).sum().item()
-
-    avg_loss = total_loss / len(dataloader)
-    accuracy = correct_predictions / total_samples
-    
-    return avg_loss, accuracy
-
-# Training function
-def run_training():
-    
-    device = setup_device()
-
-    # Load data
-    print("Loading training and testing data...")
-    train_loader, feature_scaler = create_dataloader(
-        batch_size=Config.BATCH_SIZE, 
-        is_train=True
-    )
-    test_loader, _ = create_dataloader(
-        batch_size=Config.BATCH_SIZE, 
-        is_train=False,
-        scaler=feature_scaler # Pass the fitted scaler to prevent data leakage
-    )
-
-    # Initialize model, loss and optimizer
-    if Config.MODEL == 'attention':
-        model = StockTransformer(
-            input_size=Config.INPUT_SIZE,
-            d_model=Config.HIDDEN_SIZE,
-            nhead=Config.NUMBER_OF_HEADS,
-            num_encoder_layers=Config.NUMBER_OF_ENCODERS,
-            dim_feedforward=Config.DIM_FFN,
-            output_size=Config.OUTPUT_SIZE
-        ).to(device)
-
-    elif Config.MODEL == 'lstm':
-        model = StockLSTM(
-        input_size=Config.INPUT_SIZE,
-        hidden_size=Config.HIDDEN_SIZE,
-        num_layers=Config.NUM_LAYERS,
-        output_size=Config.OUTPUT_SIZE,
-        dropout_rate=Config.DROPOUT_RATE
-        ).to(device)
-    
-
-    # WeightedCrossEntropyLoss loss for multi-class classification
-    weights_tensor = torch.tensor([1, 1.3, 1], dtype=torch.float32) # Class weights for imbalance
-    weights_tensor = weights_tensor.to(device)
-    criterion = nn.CrossEntropyLoss(weight=weights_tensor)
-    optimizer = optim.Adam(model.parameters(), lr=Config.LEARNING_RATE)
-
-    # Training loop
-    best_val_loss = float('inf')
-    early_stopper = EarlyStopper(patience=Config.PATIENCE) # Initialize Early Stopper
-    start_time = time.time()
-    
-    print("Starting training...")
-
-    for epoch in range(Config.NUM_EPOCHS):
-        # Training phase
-        train_loss = train_one_epoch(model, train_loader, criterion, optimizer, device)
-        
-        # Validation phase
-        val_loss, val_accuracy = validate_model(model, test_loader, criterion, device)
-
-        # Logging and saving
-        print(f"Epoch [{epoch+1}/{Config.NUM_EPOCHS}] | "
-              f"Train Loss: {train_loss:.4f} | "
-              f"Val Loss: {val_loss:.4f} | "
-              f"Val Acc: {val_accuracy*100:.2f}%")
-
-        # Save the model if validation loss improves
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            os.makedirs(os.path.dirname(Config.MODEL_SAVE_PATH), exist_ok=True)
-            torch.save(model.state_dict(), Config.MODEL_SAVE_PATH)
-            print(f"--> Saved best model with Val Loss: {best_val_loss:.4f}")
-            
-        # Early stopping check
-        if early_stopper.early_stop(val_loss):
-            print(f"!!! Early stopping triggered after {early_stopper.counter} epochs without improvement.")
-            break # Exit the loop
-
-    end_time = time.time()
-    print(f"\nTraining complete in {(end_time - start_time):.2f} seconds.")
-
-# Testing function
-def run_testing(model: nn.Module, dataloader: DataLoader, criterion: nn.Module, device: torch.device):
+def validate_model(model: nn.Module, dataloader: DataLoader, criterion: nn.Module, device: torch.device) -> tuple[float, float]:
     model.eval()
     total_loss = 0.0
-    correct_predictions = 0
-    total_samples = 0
-    
-    all_predictions = []
-    all_targets = []
-    
-    class_names = ['UP (0)', 'DOWN (1)', 'NEUTRAL (2)']
-    
-    print("\n--- Running Final Test Evaluation ---")
-    
-    with torch.no_grad():  
+    correct = 0
+    total = 0
+
+    with torch.no_grad():
         for X_batch, Y_batch in dataloader:
             X_batch, Y_batch = X_batch.to(device), Y_batch.to(device)
 
-            # Forward pass
             outputs = model(X_batch)
             loss = criterion(outputs, Y_batch)
             total_loss += loss.item()
-            
-            # Calculate metrics
-            _, predicted = torch.max(outputs.data, 1) 
-            total_samples += Y_batch.size(0)
-            correct_predictions += (predicted == Y_batch).sum().item()
-            
-            # Store results for Confusion Matrix and Classification Report
-            all_predictions.extend(predicted.cpu().numpy())
-            all_targets.extend(Y_batch.cpu().numpy())
+
+            _, predicted = torch.max(outputs.data, 1)
+            total += Y_batch.size(0)
+            correct += (predicted == Y_batch).sum().item()
+
+    return total_loss / len(dataloader), (correct / total if total > 0 else 0.0)
+
+
+def run_testing_torch(model: nn.Module, dataloader: DataLoader, criterion: nn.Module, device: torch.device):
+    model.eval()
+    total_loss = 0.0
+    correct = 0
+    total = 0
+
+    all_predictions: list[int] = []
+    all_targets: list[int] = []
+
+    class_names = ["UP (0)", "DOWN (1)", "NEUTRAL (2)"]
+
+    print("\n--- Running Final Test Evaluation (Torch) ---")
+
+    with torch.no_grad():
+        for X_batch, Y_batch in dataloader:
+            X_batch, Y_batch = X_batch.to(device), Y_batch.to(device)
+
+            outputs = model(X_batch)
+            loss = criterion(outputs, Y_batch)
+            total_loss += loss.item()
+
+            _, predicted = torch.max(outputs.data, 1)
+
+            total += Y_batch.size(0)
+            correct += (predicted == Y_batch).sum().item()
+
+            all_predictions.extend(predicted.cpu().numpy().tolist())
+            all_targets.extend(Y_batch.cpu().numpy().tolist())
 
     avg_loss = total_loss / len(dataloader)
-    accuracy = correct_predictions / total_samples
+    accuracy = correct / total if total > 0 else 0.0
 
     print("\n--- FINAL TEST RESULTS ---")
     print(f"Test Loss: {avg_loss:.4f}")
     print(f"Test Accuracy: {accuracy*100:.2f}%")
     print("--------------------------")
 
-    # Classification Report
-    print("\n--- CLASSIFICATION REPORT (Actionable Metrics) ---")
-    
-    # The classification report is the essential tool for imbalanced data.
-    # It shows F1 and Precision for UP (0) and DOWN (1).
-    report = classification_report(
-        y_true=all_targets, 
-        y_pred=all_predictions, 
-        target_names=class_names, 
-        digits=4, 
-        zero_division=0 # Handle cases where a class has no samples or predictions
+    print("\n--- CLASSIFICATION REPORT ---")
+    print(
+        classification_report(
+            y_true=all_targets,
+            y_pred=all_predictions,
+            target_names=class_names,
+            digits=4,
+            zero_division=0,
+        )
     )
-    print(report)
 
-    # Confusion Matrix
     cm = confusion_matrix(all_targets, all_predictions)
-    
     print("\n--- CONFUSION MATRIX (Row = True, Column = Predicted) ---")
-    
-    # Format the matrix nicely for display
-    cm_df = pd.DataFrame(cm, index=class_names, columns=class_names)
-    print(cm_df)
-    
+    print(pd.DataFrame(cm, index=class_names, columns=class_names))
+
     return accuracy, all_targets, all_predictions
 
 
-if __name__ == '__main__':
-    run_training()
+# =========================
+# LogReg helpers
+# =========================
+def dataloader_to_numpy(dataloader: DataLoader) -> tuple[np.ndarray, np.ndarray]:
+    Xs: list[np.ndarray] = []
+    ys: list[np.ndarray] = []
+    for X_batch, y_batch in dataloader:
+        Xs.append(X_batch.detach().cpu().numpy())
+        ys.append(y_batch.detach().cpu().numpy())
+    X = np.concatenate(Xs, axis=0)
+    y = np.concatenate(ys, axis=0)
+    return X, y
 
+
+def flatten_time_series(X: np.ndarray) -> np.ndarray:
+    # expected X shape: (N, T, F) for torch models
+    if X.ndim == 3:
+        n, t, f = X.shape
+        return X.reshape(n, t * f)
+    if X.ndim == 2:
+        return X
+    raise ValueError(f"Unexpected X shape for logreg: {X.shape}")
+
+
+def get_logreg_save_path() -> str:
+    root, _ext = os.path.splitext(Config.MODEL_SAVE_PATH)
+    return root + "_logreg.joblib"
+
+
+def run_training_logreg(train_loader: DataLoader, test_loader: DataLoader):
+    from joblib import dump, load  # local import to avoid dependency if unused
+
+    save_path = get_logreg_save_path()
+    if (not Config.REDO_TRAINING_IF_EXISTS) and os.path.exists(save_path):
+        print(f"Found existing LogReg model at {save_path} -> skipping training.")
+        clf = load(save_path)
+        return clf
+
+    print("Training LogReg (sklearn)...")
+
+    X_train, y_train = dataloader_to_numpy(train_loader)
+    X_test, y_test = dataloader_to_numpy(test_loader)  # for quick validation prints, optional
+
+    X_train = flatten_time_series(X_train)
+    X_test = flatten_time_series(X_test)
+
+    clf = LogisticRegression(
+        max_iter=2000,
+        multi_class="auto",
+        class_weight="balanced",  # simple default to handle imbalance
+        n_jobs=None,
+    )
+    t0 = time.time()
+    clf.fit(X_train, y_train)
+    t1 = time.time()
+
+    val_acc = float(clf.score(X_test, y_test))
+    print(f"LogReg training complete in {(t1 - t0):.2f}s | Val Acc: {val_acc*100:.2f}%")
+
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    dump(clf, save_path)
+    print(f"--> Saved LogReg model to {save_path}")
+
+    return clf
+
+
+def run_testing_logreg(clf, test_loader: DataLoader):
+    X_test, y_test = dataloader_to_numpy(test_loader)
+    X_test = flatten_time_series(X_test)
+
+    y_pred = clf.predict(X_test).astype(int).tolist()
+    y_true = y_test.astype(int).tolist()
+
+    class_names = ["UP (0)", "DOWN (1)", "NEUTRAL (2)"]
+
+    accuracy = float(np.mean(np.array(y_pred) == np.array(y_true)))
+
+    print("\n--- Running Final Test Evaluation (LogReg) ---")
+    print(f"Test Accuracy: {accuracy*100:.2f}%")
+
+    print("\n--- CLASSIFICATION REPORT ---")
+    print(
+        classification_report(
+            y_true=y_true,
+            y_pred=y_pred,
+            target_names=class_names,
+            digits=4,
+            zero_division=0,
+        )
+    )
+
+    cm = confusion_matrix(y_true, y_pred)
+    print("\n--- CONFUSION MATRIX (Row = True, Column = Predicted) ---")
+    print(pd.DataFrame(cm, index=class_names, columns=class_names))
+
+    return accuracy, y_true, y_pred
+
+
+# =========================
+# Training entrypoints
+# =========================
+def run_training_torch(train_loader: DataLoader, test_loader: DataLoader, device: torch.device) -> None:
+    # If we can reuse an existing torch model, skip training.
+    if (not Config.REDO_TRAINING_IF_EXISTS) and os.path.exists(Config.MODEL_SAVE_PATH):
+        print(f"Found existing torch model at {Config.MODEL_SAVE_PATH} -> skipping training.")
+        return
+
+    model = build_torch_model(device)
+
+    weights_tensor = torch.tensor(Config.CLASS_WEIGHTS_TORCH, dtype=torch.float32, device=device)
+    criterion = nn.CrossEntropyLoss(weight=weights_tensor)
+    optimizer = optim.Adam(model.parameters(), lr=Config.LEARNING_RATE)
+
+    best_val_loss = float("inf")
+    early_stopper = EarlyStopper(patience=Config.PATIENCE)
+
+    print("Starting training (Torch)...")
+    start_time = time.time()
+
+    for epoch in range(Config.NUM_EPOCHS):
+        train_loss = train_one_epoch(model, train_loader, criterion, optimizer, device)
+        val_loss, val_accuracy = validate_model(model, test_loader, criterion, device)
+
+        print(
+            f"Epoch [{epoch+1}/{Config.NUM_EPOCHS}] | "
+            f"Train Loss: {train_loss:.4f} | "
+            f"Val Loss: {val_loss:.4f} | "
+            f"Val Acc: {val_accuracy*100:.2f}%"
+        )
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            os.makedirs(os.path.dirname(Config.MODEL_SAVE_PATH), exist_ok=True)
+            torch.save(model.state_dict(), Config.MODEL_SAVE_PATH)
+            print(f"--> Saved best model with Val Loss: {best_val_loss:.4f}")
+
+        if early_stopper.early_stop(val_loss):
+            print(f"!!! Early stopping triggered after {early_stopper.counter} epochs without improvement.")
+            break
+
+    end_time = time.time()
+    print(f"\nTraining complete in {(end_time - start_time):.2f} seconds.")
+
+
+def main():
     device = setup_device()
 
-    criterion = nn.CrossEntropyLoss()
+    print("Loading training and testing data...")
+    train_loader, feature_scaler = create_dataloader(batch_size=Config.BATCH_SIZE, is_train=True)
+    test_loader, _ = create_dataloader(batch_size=Config.BATCH_SIZE, is_train=False, scaler=feature_scaler)
 
-    if Config.MODEL == 'attention':
-        model = StockTransformer(
-            input_size=Config.INPUT_SIZE,
-            d_model=Config.HIDDEN_SIZE,
-            nhead=Config.NUMBER_OF_HEADS,
-            num_encoder_layers=Config.NUMBER_OF_ENCODERS,
-            dim_feedforward=Config.DIM_FFN,
-            output_size=Config.OUTPUT_SIZE
-        ).to(device)
-    elif Config.MODEL == 'lstm':
-        model = StockLSTM(
-        input_size=Config.INPUT_SIZE,
-        hidden_size=Config.HIDDEN_SIZE,
-        num_layers=Config.NUM_LAYERS,
-        output_size=Config.OUTPUT_SIZE,
-        dropout_rate=Config.DROPOUT_RATE
-        ).to(device)
+    if Config.MODEL == "logreg":
+        clf = run_training_logreg(train_loader, test_loader)
+        accuracy, y_true, y_pred = run_testing_logreg(clf, test_loader)
+        save_confusion_matrix_plot(y_true, y_pred, "logreg")
+        print("Accuracy on the test set: ", accuracy)
+        return
 
-    train_loader, feature_scaler = create_dataloader(
-        batch_size=Config.BATCH_SIZE, 
-        is_train=True
-    )
-    test_loader, _ = create_dataloader(
-        batch_size=Config.BATCH_SIZE, 
-        is_train=False,
-        scaler=feature_scaler # Pass the fitted scaler to prevent data leakage
-    )
+    # Torch models
+    run_training_torch(train_loader, test_loader, device)
 
+    model = build_torch_model(device)
     state_dict = torch.load(Config.MODEL_SAVE_PATH, map_location=device)
     model.load_state_dict(state_dict)
 
-    # Predictions on test set
-    accuracy, all_targets, all_predictions = run_testing(model, test_loader, criterion, device)
+    # Match criterion to training for consistent loss reporting
+    weights_tensor = torch.tensor(Config.CLASS_WEIGHTS_TORCH, dtype=torch.float32, device=device)
+    criterion = nn.CrossEntropyLoss(weight=weights_tensor)
 
-    # Generate and save confusion matrix plot
-    save_confusion_matrix_plot(all_targets, all_predictions, Config.MODEL)
+    accuracy, y_true, y_pred = run_testing_torch(model, test_loader, criterion, device)
+    save_confusion_matrix_plot(y_true, y_pred, Config.MODEL)
+    print("Accuracy on the test set: ", accuracy)
 
-    print('Accuracy on the test set: ', accuracy)
+
+if __name__ == "__main__":
+    main()
