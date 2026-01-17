@@ -20,6 +20,13 @@ from dataloaders import create_dataloader
 from model import StockLSTM, StockTransformer
 
 
+random.seed(0)
+np.random.seed(0)
+torch.manual_seed(0)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(0)
+
+
 class Config:
     REDO_TRAINING_IF_EXISTS = False
 
@@ -49,8 +56,12 @@ class Config:
     FIGURES_DIR = "./src/figures"
 
 
-def setup_device() -> torch.device:
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def setup_device():
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
 
 
 class EarlyStopper:

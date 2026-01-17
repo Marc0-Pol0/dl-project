@@ -2,14 +2,13 @@ import pandas as pd
 import os
 from typing import Dict, Tuple
 
-# Path configurations
+
 ROOT_DIR = './data/'
 PROCESSED_DIR = os.path.join(ROOT_DIR, 'processed')
 TRAINABLE_DIR = os.path.join(ROOT_DIR, 'trainable')
 
 os.makedirs(TRAINABLE_DIR, exist_ok=True)
 
-# File names (Clean and aligned data)
 STOCK_FILENAME = 'stock_values_500.pkl'
 FUNDAMENTALS_FILENAME = 'fundamentals_500.pkl'
 SENTIMENT_FILENAME = 'news_sentiment_500.pkl'
@@ -24,34 +23,28 @@ FINAL_FEATURES = [
     'adj_price', 'MA3', 'MA6'
 ]
 
-# Data loading and preparation functions
+
 def set_date_index(data_dict: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
     indexed_data = {}
 
     for ticker, df in data_dict.items():
         if 'date' in df.columns:
-            # Convert date column to datetime type
             df['date'] = pd.to_datetime(df['date'])
 
-            # Set the date column as the index
             df = df.set_index('date')
 
-            # Ensure the index is sorted ascending immediately
             df.sort_index(inplace=True)
             
         indexed_data[ticker] = df
     return indexed_data
 
-# Load the data files from the three sources
-def load_data() -> Tuple[Dict[str, pd.DataFrame], Dict[str, pd.DataFrame], Dict[str, pd.DataFrame]]:
 
-    # Loading
+def load_data() -> Tuple[Dict[str, pd.DataFrame], Dict[str, pd.DataFrame], Dict[str, pd.DataFrame]]:
     print("Loading data files...")
     stock_values = pd.read_pickle(os.path.join(PROCESSED_DIR, STOCK_FILENAME))
     fundamentals = pd.read_pickle(os.path.join(PROCESSED_DIR, FUNDAMENTALS_FILENAME))
     news_sentiment = pd.read_pickle(os.path.join(PROCESSED_DIR, SENTIMENT_FILENAME))
 
-    # Indexing by date
     print("Setting date as index for all DataFrames...")
     stock_values = set_date_index(stock_values)
     fundamentals = set_date_index(fundamentals)
@@ -59,7 +52,7 @@ def load_data() -> Tuple[Dict[str, pd.DataFrame], Dict[str, pd.DataFrame], Dict[
 
     return stock_values, fundamentals, news_sentiment
 
-# Merging into one finel dataset
+
 def generate_final_data(stock_values, fundamentals, news_sentiment):
 
     final_data = {}
@@ -72,46 +65,28 @@ def generate_final_data(stock_values, fundamentals, news_sentiment):
             continue
             
         print(f"Merging ticker: {ticker}")
-        
-        # Stock data
         df_final = stock_values[ticker].copy()
+        df_final = df_final.merge(news_sentiment[ticker], left_index=True, right_index=True, how='inner')                       
+        df_final = df_final.merge(fundamentals[ticker], left_index=True, right_index=True, how='inner')
         
-        # Merge news sentiment to stock data
-        df_final = df_final.merge(news_sentiment[ticker], 
-                                  left_index=True, 
-                                  right_index=True, 
-                                  how='inner') 
-                                  
-        # Add fundamentals to the merged dataframe
-        df_final = df_final.merge(fundamentals[ticker], 
-                                   left_index=True, 
-                                   right_index=True, 
-                                   how='inner')
-        
-        # Check for missing columns and select the final feature set
         missing_cols = [col for col in FINAL_FEATURES if col not in df_final.columns]
         if missing_cols:
              print(f"WARNING: Ticker {ticker} is missing required columns: {missing_cols}")
              continue
 
-        # Select the final features in the specified order
         df_final = df_final[FINAL_FEATURES].copy()
         
-        # Store the final merged DataFrame
         final_data[ticker] = df_final
         print(f"Ticker {ticker} successfully merged. Final shape: {df_final.shape}")
 
     return final_data
 
-# Execute
+
 if __name__ == '__main__':
-    # Load
     stock_values, fundamentals, news_sentiment = load_data()
     
-    # Generate final merged data
     consolidated_data = generate_final_data(stock_values, fundamentals, news_sentiment)
     
-    # Save final dataset
     output_path = os.path.join(TRAINABLE_DIR, OUTPUT_FILENAME)
     print(f"\nSaving final data to: {output_path}")
     pd.to_pickle(consolidated_data, output_path)

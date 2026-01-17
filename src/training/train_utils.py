@@ -1,35 +1,11 @@
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import (
-    accuracy_score,
-    brier_score_loss,
-    classification_report,
-    confusion_matrix,
-    log_loss,
-    roc_auc_score,
-)
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, log_loss
+import matplotlib.pyplot as plt
 
-
-@dataclass(frozen=True)
-class SplitConfig:
-    # For 3-class from the new builder, use "label".
-    # For old behavior, use "label_up".
-    label_col: str = "label"
-    date_col: str = "earnings_day"
-    feature_prefixes: tuple[str, ...] = ("sent_", "f_")
-    split_date: str = "2025-05-01"
-    val_tail_frac: float = 0.15
-
-    # For multiclass string labels (only used when label_col == "label" or dtype is non-numeric)
-    # Must match the builder's label names.
-    class_order: tuple[str, ...] = ("down", "neutral", "up")
-
-
-# -------------------------- IO --------------------------
 
 def read_table(path: Path) -> pd.DataFrame:
     suf = path.suffix.lower()
@@ -40,27 +16,44 @@ def read_table(path: Path) -> pd.DataFrame:
     raise ValueError(f"Unsupported input extension '{suf}'. Use .parquet or .csv")
 
 
-# -------------------------- schema / hygiene --------------------------
-
-def ensure_sorted_datetime(df: pd.DataFrame, date_col: str) -> pd.DataFrame:
+def ensure_sorted_datetime(df: pd.DataFrame, date_col: str = "earnings_day") -> pd.DataFrame:
     d = df.copy()
+    if date_col not in d.columns:
+        raise KeyError(f"Missing date column: {date_col}")
     d[date_col] = pd.to_datetime(d[date_col], errors="coerce")
     d = d.dropna(subset=[date_col])
     return d.sort_values(date_col).reset_index(drop=True)
 
 
-# -------------------------- feature selection --------------------------
+def pick_feature_columns(
+    df: pd.DataFrame, prefixes: Iterable[str] = ("sent_", "f_"), exclude_prefixes: Iterable[str] = ("sent_seq_",),
+) -> list[str]:
+    """Pick feature columns whose names start with any of the given prefixes."""
+    prefixes_t = tuple(prefixes)
+    exclude_t = tuple(exclude_prefixes)
+    feats = [c for c in df.columns if any(c.startswith(p) for p in prefixes_t)]
+    feats = [c for c in feats if not any(c.startswith(ep) for ep in exclude_t)]
 
-def pick_feature_columns(df: pd.DataFrame, prefixes: Iterable[str]) -> list[str]:
-    prefixes = tuple(prefixes)
-    feats = [c for c in df.columns if any(c.startswith(p) for p in prefixes)]
     feats.sort()
     return feats
 
 
-# -------------------------- time splits --------------------------
+def _coerce_feature_matrix(df: pd.DataFrame, feature_cols: Sequence[str]) -> np.ndarray:
+    """Build a dense float32 matrix from the selected feature columns."""
+    X_parts: list[np.ndarray] = []
+    for c in feature_cols:
+        s = df[c]
+        if pd.api.types.is_numeric_dtype(s):
+            arr = s.to_numpy(dtype=np.float32, copy=True)
+        else:
+            arr = pd.to_numeric(s, errors="coerce").to_numpy(dtype=np.float32, copy=True)
+        X_parts.append(arr.reshape(-1, 1))
+    if not X_parts:
+        return np.zeros((len(df), 0), dtype=np.float32)
+    return np.concatenate(X_parts, axis=1)
 
-def time_split(df: pd.DataFrame, date_col: str, split_date: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+
+def time_split(df: pd.DataFrame, split_date: str, date_col: str = "earnings_day") -> tuple[pd.DataFrame, pd.DataFrame]:
     d = ensure_sorted_datetime(df, date_col)
     split_ts = pd.Timestamp(split_date)
     train = d[d[date_col] < split_ts].copy()
@@ -68,13 +61,20 @@ def time_split(df: pd.DataFrame, date_col: str, split_date: str) -> tuple[pd.Dat
     return train, test
 
 
-def time_val_split(train: pd.DataFrame, date_col: str, tail_frac: float) -> tuple[pd.DataFrame, pd.DataFrame]:
+def time_val_split(
+        train: pd.DataFrame, tail_frac: float, date_col: str = "earnings_day"
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Split a dataframe into (train, val) by taking the last `tail_frac` of unique dates as validation."""
     if len(train) == 0 or tail_frac <= 0.0:
         return train, train.iloc[0:0].copy()
 
     d = ensure_sorted_datetime(train, date_col)
-    dates = pd.to_datetime(d[date_col]).dropna().unique()
-    dates = np.array(sorted(dates))
+
+    dt = pd.to_datetime(d[date_col], errors="coerce").dropna()
+    if dt.empty:
+        return d, d.iloc[0:0].copy()
+
+    dates = np.array(sorted(dt.unique()))
     if len(dates) <= 1:
         return d, d.iloc[0:0].copy()
 
@@ -82,24 +82,33 @@ def time_val_split(train: pd.DataFrame, date_col: str, tail_frac: float) -> tupl
     n_val_dates = min(n_val_dates, len(dates) - 1)
     cutoff = dates[-n_val_dates - 1]
 
-    tr = d[pd.to_datetime(d[date_col]) <= cutoff].copy()
-    va = d[pd.to_datetime(d[date_col]) > cutoff].copy()
+    mask = pd.to_datetime(d[date_col]) <= cutoff
+    tr = d[mask].copy()
+    va = d[~mask].copy()
     return tr, va
 
 
-def make_splits(df: pd.DataFrame, cfg: SplitConfig) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, list[str]]:
-    d = ensure_sorted_datetime(df, cfg.date_col)
+def make_splits(
+    df: pd.DataFrame,
+    split_date: str,
+    val_tail_frac: float,
+    date_col: str = "earnings_day",
+    feature_prefixes: Sequence[str] = ("sent_", "f_"),
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, list[str]]:
+    d = ensure_sorted_datetime(df, date_col)
 
-    feature_cols = pick_feature_columns(d, cfg.feature_prefixes)
+    feature_cols = pick_feature_columns(d, prefixes=feature_prefixes)
     if len(feature_cols) == 0:
-        raise ValueError(f"No feature columns found for prefixes={cfg.feature_prefixes}")
+        raise ValueError(f"No feature columns found for prefixes={tuple(feature_prefixes)}")
 
-    train_full, test = time_split(d, cfg.date_col, cfg.split_date)
-    train, val = time_val_split(train_full, cfg.date_col, cfg.val_tail_frac)
+    train_full, test = time_split(d, split_date, date_col=date_col)
+    train, val = time_val_split(train_full, val_tail_frac, date_col=date_col)
     return train, val, test, feature_cols
 
 
-def print_split_sizes(df: pd.DataFrame, train: pd.DataFrame, val: pd.DataFrame, test: pd.DataFrame) -> None:
+def print_split_sizes(
+    df: pd.DataFrame, train: pd.DataFrame, val: pd.DataFrame, test: pd.DataFrame, date_col: str = "earnings_day"
+) -> None:
     def _rng(x: pd.DataFrame, col: str) -> str:
         if len(x) == 0 or col not in x.columns:
             return "∅"
@@ -109,24 +118,17 @@ def print_split_sizes(df: pd.DataFrame, train: pd.DataFrame, val: pd.DataFrame, 
 
     print("rows:", len(df), "| train:", len(train), "| val:", len(val), "| test:", len(test))
     if len(df) > 0:
-        print("date ranges:",
-              "train:", _rng(train, "earnings_day"),
-              "| val:", _rng(val, "earnings_day"),
-              "| test:", _rng(test, "earnings_day"))
+        print(
+            "date ranges:",
+            "train:", _rng(train, date_col),
+            "| val:", _rng(val, date_col),
+            "| test:", _rng(test, date_col),
+        )
 
 
-# -------------------------- X/y extraction --------------------------
-
-def encode_labels(
-    y: pd.Series,
-    class_order: Sequence[str] | None = None,
-) -> tuple[np.ndarray, list[str]]:
-    """
-    Encode labels into int indices [0..K-1] and return (y_int, class_names).
-    - If y is numeric/bool already, keeps unique sorted values as class names.
-    - If y is strings/categorical, uses class_order if provided; otherwise uses sorted uniques.
-    """
-    if pd.api.types.is_bool_dtype(y) or pd.api.types.is_integer_dtype(y) or pd.api.types.is_float_dtype(y):
+def encode_labels(y: pd.Series, class_order: Sequence[str] | None = None) -> tuple[np.ndarray, list[str]]:
+    """Encode labels into int indices [0..K-1] and return (y_int, class_names)."""
+    if pd.api.types.is_bool_dtype(y) or pd.api.types.is_integer_dtype(y):
         y_num = pd.to_numeric(y, errors="coerce")
         if y_num.isna().any():
             raise ValueError("Numeric label column contains NaNs after coercion.")
@@ -136,7 +138,19 @@ def encode_labels(
         class_names = [str(int(v)) for v in uniq]
         return y_int.astype(int), class_names
 
-    # string/categorical path
+    if pd.api.types.is_float_dtype(y):
+        y_num = pd.to_numeric(y, errors="coerce")
+        if y_num.isna().any():
+            raise ValueError("Float label column contains NaNs after coercion.")
+        if not np.allclose(y_num.to_numpy(), np.round(y_num.to_numpy()), atol=0, rtol=0):
+            raise ValueError("Float label column is not integral-valued; refusing to encode as classes.")
+        y_ints = y_num.round().astype(int)
+        uniq = np.array(sorted(pd.unique(y_ints)))
+        mapping = {int(v): i for i, v in enumerate(uniq)}
+        y_int = y_ints.map(mapping).to_numpy()
+        class_names = [str(int(v)) for v in uniq]
+        return y_int.astype(int), class_names
+
     y_str = y.astype(str)
     if class_order is None:
         classes = sorted(pd.unique(y_str))
@@ -153,42 +167,76 @@ def encode_labels(
 def get_xy(
     df: pd.DataFrame,
     feature_cols: Sequence[str],
-    label_col: str,
+    label_col: str = "label",
     class_order: Sequence[str] | None = None,
+    nan_policy: str = "raise",
 ) -> tuple[np.ndarray, np.ndarray, list[str]]:
     if label_col not in df.columns:
         raise KeyError(f"Missing label column: {label_col}")
 
-    x = df.loc[:, list(feature_cols)].to_numpy(dtype=np.float32, copy=True)
+    X = _coerce_feature_matrix(df, feature_cols)
+
+    if nan_policy not in {"raise", "zero"}:
+        raise ValueError("nan_policy must be 'raise' or 'zero'")
+
+    if nan_policy == "raise":
+        if np.isnan(X).any() or np.isinf(X).any():
+            bad = np.where(~np.isfinite(X))
+            raise ValueError(
+                f"Found non-finite values in X at indices (row,col) like: {list(zip(bad[0][:5], bad[1][:5]))}"
+            )
+    else:
+        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
+
     y_int, class_names = encode_labels(df[label_col], class_order=class_order)
-    return x, y_int, class_names
+    return X, y_int, class_names
 
 
-# -------------------------- evaluation --------------------------
+def _save_confusion_matrix_plot(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    class_names: Sequence[str],
+    model_name: str,
+    out_dir: Path = Path("src/figures"),
+) -> Path:
+    """
+    Save a confusion-matrix heatmap as a PNG using matplotlib only (no seaborn dependency).
 
-def eval_binary(y_true: np.ndarray, y_prob: np.ndarray, thresh: float = 0.5, eps: float = 1e-7) -> dict[str, float]:
-    y_true = np.asarray(y_true).astype(int)
-    y_prob = np.asarray(y_prob).astype(float)
-    y_prob = np.clip(y_prob, eps, 1.0 - eps)
+    - y_true, y_pred: integer labels 0..K-1
+    - class_names: list of display names (len K)
+    - model_name: used in title + filename
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    y_pred = (y_prob >= float(thresh)).astype(int)
+    cm = confusion_matrix(y_true, y_pred, labels=list(range(len(class_names))))
 
-    acc = float(accuracy_score(y_true, y_pred))
-    auc = float(roc_auc_score(y_true, y_prob)) if len(np.unique(y_true)) > 1 else float("nan")
-    ll = float(log_loss(y_true, np.c_[1.0 - y_prob, y_prob], labels=[0, 1]))
-    bs = float(brier_score_loss(y_true, y_prob))
+    fig, ax = plt.subplots(figsize=(9, 7))
+    im = ax.imshow(cm, cmap="Blues")
 
-    cm = confusion_matrix(y_true, y_pred)
-    rep = classification_report(y_true, y_pred, digits=4, zero_division=0)
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            ax.text(j, i, f"{cm[i, j]}", ha="center", va="center")
 
-    print(f"accuracy: {acc:.4f}")
-    print(f"auc:      {auc:.4f}")
-    print(f"logloss:  {ll:.4f}")
-    print(f"brier:    {bs:.4f}")
-    print("confusion_matrix:\n", cm)
-    print("classification_report:\n", rep)
+    ax.set_title(f"Confusion Matrix: {model_name}")
+    ax.set_xlabel("Predicted Label")
+    ax.set_ylabel("True Label")
 
-    return {"accuracy": acc, "auc": auc, "logloss": ll, "brier": bs}
+    ax.set_xticks(np.arange(len(class_names)))
+    ax.set_yticks(np.arange(len(class_names)))
+    ax.set_xticklabels(list(class_names), rotation=45, ha="right")
+    ax.set_yticklabels(list(class_names))
+
+    fig.colorbar(im, ax=ax)
+
+    safe = model_name.lower().replace(" ", "_")
+    file_path = out_dir / f"cm_{safe}.png"
+    fig.tight_layout()
+    fig.savefig(file_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    print(f"Saved confusion matrix plot to: {file_path}")
+    return file_path
 
 
 def eval_multiclass(
@@ -196,12 +244,17 @@ def eval_multiclass(
     y_proba: np.ndarray,
     class_names: Sequence[str] | None = None,
     eps: float = 1e-7,
+    model_name: str = "model",
+    save_cm_plot: bool = True,
+    cm_out_dir: Path = Path("src/figures"),
 ) -> dict[str, float]:
     """
     Multiclass evaluation.
-    - y_proba: shape (n, K), rows sum ~ 1
-    Prints: accuracy, logloss, confusion matrix, classification report.
-    Also prints multiclass Brier score (mean over samples of sum_k (p_k - 1[y=k])^2).
+
+    y_proba: shape (n, K), rows sum ~ 1.
+    Prints: accuracy, logloss, multiclass Brier score, confusion matrix, classification report.
+
+    If save_cm_plot=True, saves a confusion matrix figure to cm_out_dir.
     """
     y_true = np.asarray(y_true).astype(int)
     y_proba = np.asarray(y_proba).astype(float)
@@ -211,6 +264,9 @@ def eval_multiclass(
     n, k = y_proba.shape
     if n != len(y_true):
         raise ValueError(f"y_true length {len(y_true)} != y_proba rows {n}")
+
+    if class_names is not None and len(class_names) != k:
+        raise ValueError(f"class_names length {len(class_names)} != number of classes {k}")
 
     y_proba = np.clip(y_proba, eps, 1.0 - eps)
     y_proba = y_proba / y_proba.sum(axis=1, keepdims=True)
@@ -223,13 +279,17 @@ def eval_multiclass(
     acc = float(accuracy_score(y_true, y_pred))
     ll = float(log_loss(y_true, y_proba, labels=labels))
 
-    # Multiclass Brier: mean ||p - onehot||^2
     onehot = np.eye(k, dtype=float)[y_true]
     brier_mc = float(np.mean(np.sum((y_proba - onehot) ** 2, axis=1)))
 
     cm = confusion_matrix(y_true, y_pred, labels=labels)
     rep = classification_report(
-        y_true, y_pred, labels=labels, target_names=target_names, digits=4, zero_division=0
+        y_true,
+        y_pred,
+        labels=labels,
+        target_names=target_names,
+        digits=4,
+        zero_division=0,
     )
 
     print(f"accuracy: {acc:.4f}")
@@ -237,5 +297,14 @@ def eval_multiclass(
     print(f"brier_mc: {brier_mc:.4f}")
     print("confusion_matrix:\n", cm)
     print("classification_report:\n", rep)
+
+    if save_cm_plot:
+        _save_confusion_matrix_plot(
+            y_true=y_true,
+            y_pred=y_pred,
+            class_names=target_names,
+            model_name=model_name,
+            out_dir=cm_out_dir,
+        )
 
     return {"accuracy": acc, "logloss": ll, "brier_mc": brier_mc}
