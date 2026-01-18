@@ -1,11 +1,12 @@
 import os
+import random
 import time
 import csv
 
 from joblib import dump, load
 import numpy as np
 import pandas as pd
-from sklearn.metrics import confusion_matrix, classification_report, f1_score
+from sklearn.metrics import confusion_matrix, classification_report, f1_score, precision_score
 from sklearn.linear_model import LogisticRegression
 
 import torch
@@ -31,7 +32,7 @@ class Config:
     REDO_TRAINING_IF_EXISTS = False
 
     # If False -> do not include the 3 sentiment columns (input features go 21 -> 18)
-    USE_SENTIMENT = False
+    USE_SENTIMENT = True
 
     LEARNING_RATE = 5e-5
     NUM_EPOCHS = 15
@@ -48,7 +49,7 @@ class Config:
     NUMBER_OF_HEADS = 4
 
     # Choose model in {'lstm', 'attention', 'logreg'}
-    MODEL = "logreg"
+    MODEL = "lstm"
 
     CLASS_WEIGHTS_TORCH = [1.0, 1.3, 1.0]
 
@@ -80,9 +81,9 @@ class EarlyStopper:
         return self.counter >= self.patience
 
 
-def compute_metrics(y_true: list[int], y_pred: list[int]) -> tuple[float, float, int]:
+def compute_metrics(y_true: list[int], y_pred: list[int]) -> tuple[float, float, float, float, float]:
     """
-    Returns (macro_f1, accuracy, custom_cost)
+    Returns (macro_f1, accuracy, custom_cost, precision_up, precision_down)
 
     Custom cost:
       - correct: 0
@@ -95,16 +96,27 @@ def compute_metrics(y_true: list[int], y_pred: list[int]) -> tuple[float, float,
     macro_f1 = float(f1_score(y_true_arr, y_pred_arr, average="macro", zero_division=0))
     accuracy = float(np.mean(y_true_arr == y_pred_arr))
 
+    precision_up = float(precision_score(y_true_arr, y_pred_arr, labels=[0], average="macro", zero_division=0))
+    precision_down = float(precision_score(y_true_arr, y_pred_arr, labels=[1], average="macro", zero_division=0))
+
     wrong = y_true_arr != y_pred_arr
     up_down = ((y_true_arr == 0) & (y_pred_arr == 1)) | ((y_true_arr == 1) & (y_pred_arr == 0))
 
     raw_cost = np.sum(wrong.astype(int) * 1 + (up_down & wrong).astype(int) * 2)
     custom_cost = float(raw_cost / len(y_true_arr))
-    return macro_f1, accuracy, custom_cost
+
+    return macro_f1, accuracy, custom_cost, precision_up, precision_down
 
 
 def append_results_csv(
-    figures_dir: str, model: str, use_sentiment: bool, macro_f1: float, accuracy: float, custom_cost: int
+    figures_dir: str,
+    model: str,
+    use_sentiment: bool,
+    macro_f1: float,
+    accuracy: float,
+    custom_cost: float,
+    precision_up: float,
+    precision_down: float,
 ) -> None:
     os.makedirs(figures_dir, exist_ok=True)
     results_path = os.path.join(figures_dir, "results.csv")
@@ -113,8 +125,16 @@ def append_results_csv(
     with open(results_path, "a", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         if not file_exists:
-            w.writerow(["model", "sentiment", "macro_f1", "accuracy", "custom_cost"])
-        w.writerow([model, int(use_sentiment), f"{macro_f1:.6f}", f"{accuracy:.6f}", f"{custom_cost:.6f}"])
+            w.writerow(["model", "sentiment", "macro_f1", "accuracy", "custom_cost", "precision_up", "precision_down"])
+        w.writerow([
+            model, 
+            int(use_sentiment), 
+            f"{macro_f1:.6f}", 
+            f"{accuracy:.6f}", 
+            f"{custom_cost:.6f}", 
+            f"{precision_up:.6f}", 
+            f"{precision_down:.6f}"
+        ])
 
     print(f"Appended results to: {results_path}")
 
@@ -187,11 +207,14 @@ def run_testing_torch(model: nn.Module, dataloader: DataLoader, criterion: nn.Mo
             all_targets.extend(Y_batch.cpu().numpy().tolist())
 
     avg_loss = total_loss / len(dataloader)
-    macro_f1, accuracy, custom_cost = compute_metrics(all_targets, all_predictions)
+    macro_f1, accuracy, custom_cost, precision_up, precision_down = compute_metrics(all_targets, all_predictions)
 
     print("\n--- FINAL TEST RESULTS ---")
     print(f"Test Loss: {avg_loss:.4f}")
-    print(f"Accuracy: {accuracy*100:.2f}% | Macro-F1: {macro_f1:.4f} | Custom Cost: {custom_cost}")
+    print(
+        f"Accuracy: {accuracy*100:.2f}% | Macro-F1: {macro_f1:.4f} | Custom Cost: {custom_cost:.6f} | "
+        f"Prec(UP): {precision_up:.4f} | Prec(DOWN): {precision_down:.4f}"
+    )
     print("--------------------------")
 
     print("\n--- CLASSIFICATION REPORT ---")
@@ -209,7 +232,7 @@ def run_testing_torch(model: nn.Module, dataloader: DataLoader, criterion: nn.Mo
     print("\n--- CONFUSION MATRIX (Row = True, Column = Predicted) ---")
     print(pd.DataFrame(cm, index=class_names, columns=class_names))
 
-    return macro_f1, accuracy, custom_cost, all_targets, all_predictions
+    return macro_f1, accuracy, custom_cost, precision_up, precision_down, all_targets, all_predictions
 
 
 def dataloader_to_numpy(dataloader: DataLoader) -> tuple[np.ndarray, np.ndarray]:
@@ -276,10 +299,13 @@ def run_testing_logreg(clf, test_loader: DataLoader):
 
     class_names = ["UP (0)", "DOWN (1)", "NEUTRAL (2)"]
 
-    macro_f1, accuracy, custom_cost = compute_metrics(y_true, y_pred)
+    macro_f1, accuracy, custom_cost, precision_up, precision_down = compute_metrics(y_true, y_pred)
 
     print("\n--- Running Final Test Evaluation (LogReg) ---")
-    print(f"Accuracy: {accuracy*100:.2f}% | Macro-F1: {macro_f1:.4f} | Custom Cost: {custom_cost}")
+    print(
+        f"Accuracy: {accuracy*100:.2f}% | Macro-F1: {macro_f1:.4f} | Custom Cost: {custom_cost:.6f} | "
+        f"Prec(UP): {precision_up:.4f} | Prec(DOWN): {precision_down:.4f}"
+    )
 
     print("\n--- CLASSIFICATION REPORT ---")
     print(
@@ -296,7 +322,7 @@ def run_testing_logreg(clf, test_loader: DataLoader):
     print("\n--- CONFUSION MATRIX (Row = True, Column = Predicted) ---")
     print(pd.DataFrame(cm, index=class_names, columns=class_names))
 
-    return macro_f1, accuracy, custom_cost, y_true, y_pred
+    return macro_f1, accuracy, custom_cost, precision_up, precision_down, y_true, y_pred
 
 
 def run_training_torch(
@@ -421,7 +447,7 @@ def main():
 
     if Config.MODEL == "logreg":
         clf = run_training_logreg(train_loader, test_loader, logreg_model_path)
-        macro_f1, accuracy, custom_cost, y_true, y_pred = run_testing_logreg(clf, test_loader)
+        macro_f1, accuracy, custom_cost, precision_up, precision_down, y_true, y_pred = run_testing_logreg(clf, test_loader)
         save_confusion_matrix_plot(y_true, y_pred, model_tag, Config.FIGURES_DIR)
 
         append_results_csv(
@@ -431,6 +457,8 @@ def main():
             macro_f1=macro_f1,
             accuracy=accuracy,
             custom_cost=custom_cost,
+            precision_up=precision_up,
+            precision_down=precision_down,
         )
         return
 
@@ -462,7 +490,9 @@ def main():
     weights_tensor = torch.tensor(Config.CLASS_WEIGHTS_TORCH, dtype=torch.float32, device=device)
     criterion = nn.CrossEntropyLoss(weight=weights_tensor)
 
-    macro_f1, accuracy, custom_cost, y_true, y_pred = run_testing_torch(model, test_loader, criterion, device)
+    macro_f1, accuracy, custom_cost, precision_up, precision_down, y_true, y_pred = run_testing_torch(
+        model, test_loader, criterion, device
+    )
     save_confusion_matrix_plot(y_true, y_pred, model_tag, Config.FIGURES_DIR)
 
     append_results_csv(
@@ -472,6 +502,8 @@ def main():
         macro_f1=macro_f1,
         accuracy=accuracy,
         custom_cost=custom_cost,
+        precision_up=precision_up,
+        precision_down=precision_down,
     )
 
 
