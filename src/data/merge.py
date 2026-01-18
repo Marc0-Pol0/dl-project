@@ -1,6 +1,6 @@
-import pandas as pd
 import os
-from typing import Dict, Tuple
+
+import pandas as pd
 
 
 ROOT_DIR = './data/'
@@ -24,22 +24,20 @@ FINAL_FEATURES = [
 ]
 
 
-def set_date_index(data_dict: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
+def set_date_index(data_dict: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
     indexed_data = {}
 
     for ticker, df in data_dict.items():
         if 'date' in df.columns:
             df['date'] = pd.to_datetime(df['date'])
-
             df = df.set_index('date')
-
             df.sort_index(inplace=True)
             
         indexed_data[ticker] = df
     return indexed_data
 
 
-def load_data() -> Tuple[Dict[str, pd.DataFrame], Dict[str, pd.DataFrame], Dict[str, pd.DataFrame]]:
+def load_data() -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame], dict[str, pd.DataFrame]]:
     print("Loading data files...")
     stock_values = pd.read_pickle(os.path.join(PROCESSED_DIR, STOCK_FILENAME))
     fundamentals = pd.read_pickle(os.path.join(PROCESSED_DIR, FUNDAMENTALS_FILENAME))
@@ -54,7 +52,6 @@ def load_data() -> Tuple[Dict[str, pd.DataFrame], Dict[str, pd.DataFrame], Dict[
 
 
 def generate_final_data(stock_values, fundamentals, news_sentiment):
-
     final_data = {}
     all_tickers = stock_values.keys()
 
@@ -75,7 +72,6 @@ def generate_final_data(stock_values, fundamentals, news_sentiment):
              continue
 
         df_final = df_final[FINAL_FEATURES].copy()
-        
         final_data[ticker] = df_final
         print(f"Ticker {ticker} successfully merged. Final shape: {df_final.shape}")
 
@@ -84,7 +80,6 @@ def generate_final_data(stock_values, fundamentals, news_sentiment):
 
 if __name__ == '__main__':
     stock_values, fundamentals, news_sentiment = load_data()
-    
     consolidated_data = generate_final_data(stock_values, fundamentals, news_sentiment)
     
     output_path = os.path.join(TRAINABLE_DIR, OUTPUT_FILENAME)

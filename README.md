@@ -1,12 +1,13 @@
 # DL Project: Predicting Earnings Announcement Day Direction
 
-Predicting stock price reactions to earnings announcements by combining firm fundamentals, market data and FinBERT-based news sentiment using deep learning models.
+This project was developed as part of a Deep Learning course project. It is about predicting stock price reactions to earnings announcements by combining firm fundamentals, market data and FinBERT-based news sentiment using deep learning models.
 
 ## Overview
 - Task: multi-class classification (Up / Neutral / Down stock price movement after an earnings announcement)
 - Dataset: custom-built dataset of ~1,000 US equity earnings announcements (Oct 2024 – Aug 2025, 500 companies), combining firm fundamentals, market prices and FinBERT-based news sentiment over a 30-day pre-announcement window
-- Model: MLP baseline, LSTM and Transformer
-- Goal / metric: predict post-EA price movement using accuracy, precision, recall, F1-score
+- Models: Logistic Regression baseline, LSTM and Transformer
+- Goal: predict post-EA price movement
+- Metrics: Accuracy, Precision, Macro-F1, and a custom cost metric that penalizes incorrect Up/Down predictions more heavily than Neutral errors
 
 ## Repository Structure
 - dataset_generation/  
@@ -25,18 +26,18 @@ Predicting stock price reactions to earnings announcements by combining firm fun
       - `dataloaders.py` - dataloaders for training and testing
       - `model.py` - classes for all the implemented models
       - `train.py` - training Pipeline
-      - `utils.py` - helper functions
+   - training/ - legacy folder with different models tested during the course of the project
 - data/
-   - raw/ - raw data from the pipeline inside dataset_generation/
+   - raw/ - raw data from the pipeline inside dataset_generation/, not available in this repo for size reasons
    - processed/ - cleaned data
    - trainable/ - cleaned and date-aligned data for top20 and top500 companies from the US market. Ready to use for training.
 - networks/ - weights of trained networks
-   - `lstm.pth` - baseline LSTM model
-   - `transformer.pth` - baseline transformer model
-   - `attention_buffer_ea_date.pth` - transformer model with 2 days buffer on EA date 
-   - `lstm_buffer_ea_date.pth` - LSTM model with 2 days buffer on EA date 
-   - `lstm_best.pth` - LSTM model with weighted Cross Entropy Loss
-   - `lstm_sgd.pth` - LSTM model with SGD optimizer
+   - `lstm.pth` - trained LSTM model
+   - `attention.pth` - trained transformer model
+   - `logreg.joblib` - trained logistic regression model
+   - `lstm_nosent.pth` - LSTM model trained without sentiment analysis data
+   - `attention_nosent.pth` - transformer model trained without sentiment analysis data
+   - `logreg_nosent.joblib` - logistic regression model trained without sentiment analysis data
 - tests/
    - `playground.py` - playground file for data inspection
 - `requirements.txt` - dependencies
@@ -44,22 +45,17 @@ Predicting stock price reactions to earnings announcements by combining firm fun
 - `runner.sh` - used to train models on the ETH student cluster
 
 ## Quickstart
-1. Create **environment** (optional)
-   python -m venv .venv  
-   source .venv/bin/activate  (macOS/Linux)  
-   .venv\Scripts\activate     (Windows)
+1. Create virtual **environment** (optional)
 
 2. Install **dependencies**  
-   pip install -r requirements.txt
 
 3. Prepare **data**: 
    Dataset was generated offline using `dataset_generation/DL_project_data.ipynb`
    and saved as `DL_dataset.pkl` (generation requires private API access). All the data necessary data is saved under the data repository.
 
-4. **Train**: Configure `MODEL_SAVE_PATH` and run the file `src/train.py`. Trained model is saved to the `networks/` directory. On the ETH student cluster, run _sbatch runner.sh_.
+4. **Train**: Choose the model you want to train and whether to use the sentiment data in the Config and run the file `src/train.py`. Trained model is saved to the `networks/` directory. On the ETH student cluster, run _sbatch runner.sh_.
 
-
-5. **Evaluate**: Comment `run_training()` in `src/train.py` and run the script. The models analyzed in the report are the following: `lstm_buffer_ea_date` and `attention_buffer_ea_date`. Select `MODEL_SAVE_PATH` in the configuration class accordingly. You can also evaluate different pre-trained models from the `networks/` directory. 
+5. **Evaluate**: The trained model will automatically be evaluated. The models analyzed in the report are the following: `lstm.pth`, `lstm_nosent.pth`, `attention.pth`, `attention_nosent.pth`, `logreg.joblib`, and `logreg_nosent.joblib`. You can also evaluate different pre-trained models from the `networks/` directory, by having the variable `REDO_TRAINING_IF_EXISTS` in the Config set to false and the right parameters.
 
 ## Setup
 Requirements:
@@ -70,10 +66,10 @@ Requirements:
 - Optional: CUDA-enabled GPU for faster training
 
 ## Data
-- **Source:** `data/raw/DL_dataset.pkl` (provided; dataset generation is not reproducible from this repository)
+- **Source:** `data/raw/DL_dataset.pkl` (not provided in this repo for size reasons)
 - **Pipeline:** starting from `DL_dataset.pkl`, the preprocessing code in `src/data/` produces reproducible intermediate and final datasets
 - **Folder structure:**
-  - `data/raw/` – raw dataset (`DL_dataset.pkl`)
+  - `data/raw/` – raw dataset (`DL_dataset.pkl`), not provided in this repo
   - `data/processed/` – intermediate processed data
   - `data/trainable/` – final data used for model training
 - **Preprocessing code:** `src/data/merge.py`, `src/data/preprocess.py`, `src/data/sentiment.py`
@@ -85,7 +81,7 @@ stored as pandas DataFrames. See the last cell of `dataset_generation/DL_project
 
 ## Configuration
 No centralized configuration system is used.  
-Model and preprocessing parameters are defined directly in the code.
+Model and preprocessing parameters are defined directly in the code. Key training options (model type, sentiment usage, early stopping) are controlled via the `Config` class in `src/models/train.py`.
 
 ## Usage
 **Training** and **Evaluation**:
@@ -95,19 +91,18 @@ Model and preprocessing parameters are defined directly in the code.
 - No standalone inference script is provided; predictions are produced as part of training and evaluation.
 
 ## Reproducibility
-- **Library** versions: see `requirements.txt`
-- **Hardware**: runs on GPU if CUDA is available, otherwise on CPU 
+- **Hardware**: runs on GPU if CUDA is available, on MPS on MacOS if available, and on CPU otherwise.
 - **Data**: results are reproducible starting from `data/raw/DL_dataset.pkl` (dataset generation itself is not reproducible)
 - **Steps**:
-  1. Preprocess data starting from `DL_dataset.pkl`
+  1. Preprocess data
   2. Train model
   3. Run evaluation
 
 ## Results
 - **Saved outputs:** best-performing model checkpoints are stored in `networks/`.
 - **Metrics:** classification metrics (e.g. accuracy, precision, recall, F1) are computed during evaluation
-- **Models evaluated:** Logistic Regression, XGBoost, MLP, LSTM and Transformer
-- **Summary:** Our evaluation shows that the LSTM acts as a conservative, risk-averse predictor, prioritizing precision by defaulting to a neutral stance during periods of high uncertainty. In contrast, the Transformer is more sensitive to market shocks, successfully identifying a higher volume of significant price movements through its attention mechanism. Both models demonstrate that fusing FinBERT sentiment with firm fundamentals creates a robust signal for distinguishing between stationary and volatile market states. Ultimately, the choice between architectures represents a trade-off between the LSTM's reliability and the Transformer's ability to capture stock volatility.
+- **Models evaluated:** Logistic Regression, LSTM and Transformer
+- **Summary:** Our results show that the LSTM achieves lower financial risk through conservative predictions, while the Transformer captures more volatile movements and attains a higher Macro-F1 score. The baseline performs poorly in terms of risk control, and sentiment features consistently improve stability and performance across models. These findings underscore the inherent trade-offs between sensitivity and risk management when applying deep learning models to noisy, imbalanced financial prediction tasks.
 
   > Note: All the details are presented in the report.
 

@@ -1,11 +1,2 @@
 .DS_Store
 __pycache__/
-
-# Large generated datasets
-*.pkl
-data/raw/DL_dataset*.pkl
-dataset_generation/DL_dataset.pkl
-
-# Large generated data
-*.pkl
-data/processed/news.pkl

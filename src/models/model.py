@@ -50,22 +50,22 @@ class PositionalEncoding(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Add positional encoding to the input sequence (transposed to match PE shape)
-        
         x = x + self.pe[:x.size(1)].squeeze(1) 
         return self.dropout(x)
 
 
 class StockTransformer(nn.Module):
-    def __init__(self, 
-                 input_size: int,         # Dimensionality of the input features
-                 d_model: int,            # Dimensionality of the model's internal representation
-                 nhead: int,              # Number of attention heads
-                 num_encoder_layers: int, # Number of encoder blocks to stack
-                 dim_feedforward: int,    # Dimensionality of the FFN hidden layer
-                 output_size: int,        # Number of classification classes
-                 dropout: float = 0.1,
-                 sequence_length: int = 30):
-        
+    def __init__(
+        self, 
+        input_size: int,
+        d_model: int,
+        nhead: int,
+        num_encoder_layers: int,
+        dim_feedforward: int,
+        output_size: int,
+        dropout: float = 0.1,
+        sequence_length: int = 30
+    ):
         super().__init__()
         
         self.embedding = nn.Linear(input_size, d_model)

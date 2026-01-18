@@ -257,11 +257,7 @@ def predict_proba_multiclass(model: nn.Module, loader: DataLoader, device: str) 
 
 
 def train_one_epoch(
-    model: nn.Module,
-    loader: DataLoader,
-    opt: torch.optim.Optimizer,
-    loss_fn: nn.Module,
-    device: str,
+    model: nn.Module, loader: DataLoader, opt: torch.optim.Optimizer, loss_fn: nn.Module, device: str
 ) -> float:
     model.train()
     total = 0.0

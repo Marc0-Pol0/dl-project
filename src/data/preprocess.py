@@ -1,8 +1,9 @@
-import os
-import pandas as pd
 import datetime as dt
+
+import pandas as pd
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch
+
 from sentiment import get_finbert_probabilities
 
 
@@ -110,13 +111,11 @@ if NEWS:
             return get_finbert_probabilities(text, model, tokenizer, device)
         
         sentiment_series = news_raw['body'].apply(sentiment_caller)
-
         sentiment_scores = sentiment_series.apply(pd.Series)
         
         # 3. COMBINE DATA AND CALCULATE DAILY MEAN
         
         news_sentiment = pd.concat([news_raw[['date']], sentiment_scores], axis=1)
-
         daily_sentiment = news_sentiment.groupby('date')[
             ['positive', 'negative', 'neutral']
         ].mean().reset_index()
@@ -125,13 +124,11 @@ if NEWS:
         all_days = pd.date_range(start=start_date, end=end_date, freq='D')
         
         daily_sentiment['date'] = pd.to_datetime(daily_sentiment['date'])
-
         daily_sentiment = daily_sentiment.set_index('date').reindex(all_days)
         daily_sentiment = daily_sentiment.ffill().bfill()
         daily_sentiment = daily_sentiment.reset_index().rename(columns={'index': 'date'})
 
         news_dict[ticker] = daily_sentiment
-
         print(news_dict[ticker].head())
 
     if SAVE:
@@ -148,7 +145,6 @@ if DATES:
 
         ea_date = obj[id]['earnings']['Earnings Date']
         date_df = pd.DataFrame(ea_date)
-
         date_df = date_df.reset_index().rename(columns={'index': 'date'})
     
         dates_dict[ticker] = date_df

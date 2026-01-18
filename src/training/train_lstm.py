@@ -460,7 +460,6 @@ def main() -> None:
 
     static_num_cols, _ = get_static_feature_columns(event_df)
 
-    # categories for event_type one-hot (must be fixed from TRAIN ONLY ideally; using full is ok since it's only categories)
     event_type_categories = sorted(event_df["event_type"].astype(str).unique().tolist()) if "event_type" in event_df.columns else ["BMO", "AMC", "INTRADAY"]
 
     final_data: dict[str, pd.DataFrame] = load_pickle(FINAL_DATA)
@@ -495,12 +494,10 @@ def main() -> None:
             lengths.append(L)
         return seqs, lengths
 
-    # Build raw sequences (aligned 1:1 with the part rows)
     tr_seqs_raw, tr_lengths = build_sequences_for_part(train)
     va_seqs_raw, va_lengths = build_sequences_for_part(val) if len(val) else ([], [])
     te_seqs_raw, te_lengths = build_sequences_for_part(test)
 
-    # Filter out any empty sequences (rare with your current setup, but keep safe)
     def filter_nonempty(part: pd.DataFrame, seqs: list[np.ndarray], lengths: list[int]) -> tuple[pd.DataFrame, list[np.ndarray], list[int]]:
         keep = np.array(lengths, dtype=np.int64) > 0
         part2 = part.iloc[np.where(keep)[0]].copy()

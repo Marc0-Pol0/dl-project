@@ -1,9 +1,7 @@
 import torch
 from scipy.special import softmax
-from typing import Dict, Any
 
 
-# Function to get sentiment probabilities using FinBERT model
 def get_finbert_probabilities(sentence, model, tokenizer, device):
 
     LABELS = model.config.id2label
@@ -26,4 +24,3 @@ def get_finbert_probabilities(sentence, model, tokenizer, device):
     }
 
     return final_probs
-
