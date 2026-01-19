@@ -1,112 +1,162 @@
 # DL Project: Predicting Earnings Announcement Day Direction
 
-This project was developed as part of a Deep Learning course project. It is about predicting stock price reactions to earnings announcements by combining firm fundamentals, market data and FinBERT-based news sentiment using deep learning models.
+This project was developed as part of a Deep Learning course project. It focuses on predicting stock price reactions to earnings announcements by combining firm fundamentals, market data, and FinBERT-based news sentiment using deep learning models.
+
+**Important note on data availability**  
+Due to size constraints, some data files referenced in this repository are **not included on GitHub**. The complete dataset and intermediate files are available on the original **GitLab repository**: https://gitlab.ethz.ch/nsoldati/dl-project
+
+---
 
 ## Overview
-- Task: multi-class classification (Up / Neutral / Down stock price movement after an earnings announcement)
-- Dataset: custom-built dataset of ~1,000 US equity earnings announcements (Oct 2024 – Aug 2025, 500 companies), combining firm fundamentals, market prices and FinBERT-based news sentiment over a 30-day pre-announcement window
-- Models: Logistic Regression baseline, LSTM and Transformer
-- Goal: predict post-EA price movement
-- Metrics: Accuracy, Precision, Macro-F1, and a custom cost metric that penalizes incorrect Up/Down predictions more heavily than Neutral errors
+- **Task:** multi-class classification (Up / Neutral / Down stock price movement after an earnings announcement)
+- **Dataset:** custom-built dataset of ~1,000 U.S. equity earnings announcements (Oct 2024 – Aug 2025, 500 companies), combining firm fundamentals, market prices, and FinBERT-based news sentiment over a 30-day pre-announcement window
+- **Models:** Logistic Regression baseline, LSTM, and Transformer
+- **Goal:** predict post-EA price movement
+- **Metrics:** Accuracy, Precision, Macro-F1, and a custom cost metric that penalizes incorrect Up/Down predictions more heavily than Neutral errors
+
+---
 
 ## Repository Structure
-- dataset_generation/  
-  - `DL_project_data.ipynb` – Jupyter notebook used to build the custom dataset by aggregating firm fundamentals, market prices and news sentiment  
-  - `DL_project_news.py` – merges previously downloaded news files (segmented by time periods and company batches) into a consolidated news dataset  
-  - `utils.py` – helper functions  
-  - `DL_project_config.yml` – configuration file for dataset construction  
-  > Note: dataset generation requires private API access and was executed on an external Azure VM; paths and credentials are not portable or included in this repository.
-- src/
-   - data/
-      - `merge.py` - merge fundamentals, news sentiment and stock values
-      - `preprocess.py` - cleaning and aligning of raw data
-      - `sentiment.py` - generate FinBERT sentiment distribution
-   - figures/ - confusion matrices for all the models
-   - models/
-      - `dataloaders.py` - dataloaders for training and testing
-      - `model.py` - classes for all the implemented models
-      - `train.py` - training Pipeline
-   - training/ - legacy folder with different models tested during the course of the project
-- data/
-   - raw/ - raw data from the pipeline inside dataset_generation/, not available in this repo for size reasons
-   - processed/ - cleaned data
-   - trainable/ - cleaned and date-aligned data for top20 and top500 companies from the US market. Ready to use for training.
-- networks/ - weights of trained networks
-   - `lstm.pth` - trained LSTM model
-   - `attention.pth` - trained transformer model
-   - `logreg.joblib` - trained logistic regression model
-   - `lstm_nosent.pth` - LSTM model trained without sentiment analysis data
-   - `attention_nosent.pth` - transformer model trained without sentiment analysis data
-   - `logreg_nosent.joblib` - logistic regression model trained without sentiment analysis data
-- tests/
-   - `playground.py` - playground file for data inspection
-- `requirements.txt` - dependencies
-- `README.md` - this file
-- `runner.sh` - used to train models on the ETH student cluster
+
+### Dataset generation
+- `dataset_generation/`
+  - `DL_project_data.ipynb` – Jupyter notebook used to build the custom dataset by aggregating firm fundamentals, market prices, and news sentiment
+  - `DL_project_news.py` – merges previously downloaded news files (segmented by time periods and company batches) into a consolidated news dataset
+  - `utils.py` – helper functions
+  - `DL_project_config.yml` – configuration file for dataset construction
+
+> **Note:** Dataset generation requires private API access and was executed on an external Azure VM. Paths, credentials, and raw data are not portable. The resulting data files are **not included in this GitHub repository**, but are available on GitLab.
+
+### Source code
+- `src/`
+  - `data/`
+    - `merge.py` – merge fundamentals, news sentiment, and stock values
+    - `preprocess.py` – cleaning and alignment of raw data
+    - `sentiment.py` – generation of FinBERT sentiment distributions
+  - `figures/` – confusion matrices for all evaluated models
+  - `models/`
+    - `dataloaders.py` – dataloaders for training and testing
+    - `model.py` – model definitions
+    - `train.py` – training pipeline
+  - `training/` – legacy experiments conducted during the project
+
+### Data
+- `data/`
+  - `raw/` – raw dataset generated by the pipeline (**not included on GitHub**)
+  - `processed/` – intermediate processed data (**partially included on GitHub**)
+  - `trainable/` – cleaned and date-aligned data ready for training (**fully included on GitHub**)
+
+➡️ All of the above data directories are present in the **GitLab repository**:  
+https://gitlab.ethz.ch/nsoldati/dl-project
+
+### Trained models
+- `networks/`
+  - `lstm.pth` – trained LSTM
+  - `attention.pth` – trained Transformer
+  - `logreg.joblib` – trained logistic regression
+  - `lstm_nosent.pth` – LSTM without sentiment
+  - `attention_nosent.pth` – Transformer without sentiment
+  - `logreg_nosent.joblib` – logistic regression without sentiment
+
+### Miscellaneous
+- `tests/playground.py` – data inspection playground
+- `requirements.txt` – dependencies
+- `runner.sh` – script for training on the ETH student cluster
+- `README.md` – this file
+
+---
 
 ## Quickstart
-1. Create virtual **environment** (optional)
 
-2. Install **dependencies**  
+1. **Create virtual environment** (optional)
 
-3. Prepare **data**: 
-   Dataset was generated offline using `dataset_generation/DL_project_data.ipynb`
-   and saved as `DL_dataset.pkl` (generation requires private API access). All the data necessary data is saved under the data repository.
+2. **Install dependencies**  
+   pip install -r requirements.txt
 
-4. **Train**: Choose the model you want to train and whether to use the sentiment data in the Config and run the file `src/train.py`. Trained model is saved to the `networks/` directory. On the ETH student cluster, run _sbatch runner.sh_.
+3. **Prepare data**  
+   The dataset was generated offline using `dataset_generation/DL_project_data.ipynb` and saved as `DL_dataset.pkl`.  
+   Due to size constraints, the raw and some of the processed data files are **not included in this GitHub repository**. They are available on the original GitLab repository:  
+   https://gitlab.ethz.ch/nsoldati/dl-project
 
-5. **Evaluate**: The trained model will automatically be evaluated. The models analyzed in the report are the following: `lstm.pth`, `lstm_nosent.pth`, `attention.pth`, `attention_nosent.pth`, `logreg.joblib`, and `logreg_nosent.joblib`. You can also evaluate different pre-trained models from the `networks/` directory, by having the variable `REDO_TRAINING_IF_EXISTS` in the Config set to false and the right parameters.
+4. **Train**  
+   Configure the model type and whether to use sentiment features in the `Config` class, then run:  
+   python src/models/train.py  
+
+   Trained model checkpoints are saved to `networks/`.  
+   On the ETH student cluster, submit the job using:  
+   sbatch runner.sh
+
+5. **Evaluate**  
+   Evaluation is run automatically after training. To evaluate an existing checkpoint without retraining, set `REDO_TRAINING_IF_EXISTS = false` in `Config` and select the desired model/sentiment settings. The models reported in the paper are:  
+   `lstm.pth`, `lstm_nosent.pth`, `attention.pth`, `attention_nosent.pth`, `logreg.joblib`, `logreg_nosent.joblib`.
+
+---
 
 ## Setup
-Requirements:
+**Requirements:**
 - Python ≥ 3.9
-- PyTorch (for LSTM/Transformer training)
-- Hugging Face Transformers (FinBERT sentiment features)
-- scikit-learn + scipy (preprocessing and metrics)
+- PyTorch (for LSTM and Transformer training)
+- Hugging Face Transformers (for FinBERT sentiment features)
+- scikit-learn and scipy (preprocessing and evaluation)
 - Optional: CUDA-enabled GPU for faster training
 
+---
+
 ## Data
-- **Source:** `data/raw/DL_dataset.pkl` (not provided in this repo for size reasons)
-- **Pipeline:** starting from `DL_dataset.pkl`, the preprocessing code in `src/data/` produces reproducible intermediate and final datasets
+- **Source:** `data/raw/DL_dataset.pkl`  
+  This file is **not included in this GitHub repository** due to size constraints. The full raw and processed datasets are available on the original GitLab repository:  
+  https://gitlab.ethz.ch/nsoldati/dl-project
+- **Pipeline:** starting from `DL_dataset.pkl`, the preprocessing code in `src/data/` produces reproducible intermediate and final datasets.
 - **Folder structure:**
-  - `data/raw/` – raw dataset (`DL_dataset.pkl`), not provided in this repo
+  - `data/raw/` – raw dataset (`DL_dataset.pkl`), not included on GitHub
   - `data/processed/` – intermediate processed data
   - `data/trainable/` – final data used for model training
 - **Preprocessing code:** `src/data/merge.py`, `src/data/preprocess.py`, `src/data/sentiment.py`
 
 ### Dataset schema (summary)
 `DL_dataset.pkl` is a Python dictionary indexed by firm identifier.  
-Each entry contains ticker mapping, prices, fundamentals, ratios, news, and earnings data
-stored as pandas DataFrames. See the last cell of `dataset_generation/DL_project_data.ipynb` for the full schema.
+Each entry contains ticker mappings, prices, fundamentals, ratios, news articles, and earnings data stored as pandas DataFrames.  
+See the final cell of `dataset_generation/DL_project_data.ipynb` for the full schema.
+
+---
 
 ## Configuration
 No centralized configuration system is used.  
-Model and preprocessing parameters are defined directly in the code. Key training options (model type, sentiment usage, early stopping) are controlled via the `Config` class in `src/models/train.py`.
+Model architecture choices and preprocessing parameters are defined directly in the code. Key training options (model type, sentiment usage, early stopping, checkpoint reuse) are controlled via the `Config` class in `src/models/train.py`.
+
+---
 
 ## Usage
-**Training** and **Evaluation**:
-- python src/models/train.py
+**Training and evaluation:**  
+Run `python src/models/train.py` to preprocess data (if needed), train the selected model, and evaluate it.
 
-**Inference**:
-- No standalone inference script is provided; predictions are produced as part of training and evaluation.
+**Inference:**  
+No standalone inference script is provided; predictions are generated as part of the training and evaluation pipeline.
+
+---
 
 ## Reproducibility
-- **Hardware**: runs on GPU if CUDA is available, on MPS on MacOS if available, and on CPU otherwise.
-- **Data**: results are reproducible starting from `data/raw/DL_dataset.pkl` (dataset generation itself is not reproducible)
-- **Steps**:
+- **Hardware:** runs on GPU if CUDA is available, on MPS on macOS if available, and on CPU otherwise.
+- **Data:** results are reproducible starting from `data/raw/DL_dataset.pkl` (dataset generation itself is not reproducible).
+- **Steps:**
   1. Preprocess data
   2. Train model
   3. Run evaluation
 
+---
+
 ## Results
 - **Saved outputs:** best-performing model checkpoints are stored in `networks/`.
-- **Metrics:** classification metrics (e.g. accuracy, precision, recall, F1) are computed during evaluation
-- **Models evaluated:** Logistic Regression, LSTM and Transformer
-- **Summary:** Our results show that the LSTM achieves lower financial risk through conservative predictions, while the Transformer captures more volatile movements and attains a higher Macro-F1 score. The baseline performs poorly in terms of risk control, and sentiment features consistently improve stability and performance across models. These findings underscore the inherent trade-offs between sensitivity and risk management when applying deep learning models to noisy, imbalanced financial prediction tasks.
+- **Metrics:** classification metrics (accuracy, precision, recall, Macro-F1) and a custom cost metric are computed during evaluation.
+- **Models evaluated:** Logistic Regression, LSTM, and Transformer.
+- **Summary:** The LSTM achieves lower financial risk through conservative predictions, while the Transformer captures more volatile movements and attains a higher Macro-F1 score. The baseline performs poorly in terms of risk control, and sentiment features consistently improve stability and performance across models.
 
-  > Note: All the details are presented in the report.
+> Full experimental details and analysis are provided in the project report.
+
+---
 
 ## Contributors
-- Manuel Noseda
-- Nathan Soldati
+- Manuel Noseda  
+- Nathan Soldati  
 - Marco Paina
+
