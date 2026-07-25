@@ -1,0 +1,4 @@
+partition,events,firms,first_event,last_event,UP,DOWN,NEUTRAL,pct_UP,pct_DOWN,pct_NEUTRAL,dropped_window_before_history,dropped_label_unavailable
+train,706,499,2024-10-31,2025-02-28,227,209,270,32.2,29.6,38.2,7787,0
+val,364,363,2025-03-03,2025-05-02,118,73,173,32.4,20.1,47.5,0,0
+test,152,152,2025-05-05,2025-06-20,47,41,64,30.9,27.0,42.1,0,0

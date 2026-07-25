@@ -1,0 +1,13 @@
+model,mcnemar_n01,mcnemar_n10,mcnemar_p,cost_diff_vs_abstain,permutation_p
+attention__all,24,31,0.4188,0.4539,0.0
+attention__no_sentiment,23,29,0.4885,0.4737,0.0
+gradient_boosting__all,31,44,0.1654,0.4934,0.0
+gradient_boosting__no_sentiment,35,38,0.8151,0.3882,0.0
+logreg__all,30,39,0.3356,0.4803,0.0
+logreg__no_sentiment,33,38,0.6353,0.4408,0.0
+lstm__all,25,29,0.6835,0.4868,0.0
+lstm__no_sentiment,24,29,0.5831,0.4539,0.0
+mlp__all,32,40,0.4096,0.3947,0.0
+mlp__no_sentiment,35,36,1.0,0.3882,0.0
+random_forest__all,39,40,1.0,0.3618,0.0002
+random_forest__no_sentiment,39,43,0.7407,0.3553,0.0002
